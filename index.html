@@ -16,6 +16,12 @@
       <button onclick="createNewTrip()" class="btn btn-secondary" title="Neuen Trip anlegen">+ Neu</button>
       <button onclick="renameActiveTrip()" class="btn btn-icon" title="Trip umbenennen">✏️</button>
       <button onclick="deleteActiveTrip()" class="btn btn-icon" title="Trip löschen">🗑️</button>
+      <!-- Buttons für Export/Import -->
+      <button onclick="exportActiveTrip()" class="btn btn-secondary" title="Aktiven Trip als Datei speichern">💾 Exportieren</button>
+      <button onclick="triggerImportTrip()" class="btn btn-secondary" title="Trip aus Datei laden">📥 Importieren</button>
+
+      <!-- Versteckter Datei-Upload-Input -->
+      <input type="file" id="importTripInput" accept=".json" onchange="importTrip(event)" style="display: none;" />
       <button onclick="toggleSettingsModal()" class="btn btn-icon">⚙️ Einstellungen</button>
     </div>
   </header>
