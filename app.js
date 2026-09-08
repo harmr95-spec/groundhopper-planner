@@ -16,8 +16,6 @@ let map, markersLayer, routeLayer;
 let travelCache = new Map(); // wird pro Berechnung geleert, vermeidet doppelte OSRM-Aufrufe
 
 // Liga-Namen je Land (ISO-3166-1 alpha-2, lowercase, wie von Nominatim geliefert) und Level.
-// Bewusst begrenzt auf gängige Groundhopping-Länder - bei unbekannten Kombinationen
-// wird generisch "Liga-Level X" angezeigt.
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
   nl: { 1: "Eredivisie", 2: "Eerste Divisie", 3: "Tweede Divisie", 4: "Derde Divisie", 5: "Vierde Divisie", 6: "Vijfde Divisie o. niedriger" },
@@ -31,6 +29,40 @@ const LEAGUE_NAMES = {
   pt: { 1: "Primeira Liga", 2: "Liga Portugal 2", 3: "Campeonato de Portugal", 4: "Divisão de Honra" },
   pl: { 1: "Ekstraklasa", 2: "I liga", 3: "II liga", 4: "III liga" },
   dk: { 1: "Superliga", 2: "1. Division", 3: "2. Division" }
+};
+
+// Zuordnung von Ländercodes & Ländernamen für die Wappen-Validierung
+const COUNTRY_MAPPINGS = {
+  de: ["germany", "deutschland"],
+  fr: ["france", "frankreich"],
+  gb: ["england", "scotland", "wales", "northern ireland", "united kingdom", "uk", "großbritannien"],
+  es: ["spain", "spanien"],
+  it: ["italy", "italien"],
+  nl: ["netherlands", "niederlande", "holland"],
+  be: ["belgium", "belgien"],
+  at: ["austria", "österreich"],
+  ch: ["switzerland", "schweiz"],
+  pt: ["portugal"],
+  pl: ["poland", "polen"],
+  dk: ["denmark", "dänemark"],
+  se: ["sweden", "schweden"],
+  no: ["norway", "norwegen"],
+  fi: ["finland", "finnland"],
+  cz: ["czech republic", "tschechien", "czechia"],
+  tr: ["turkey", "türkei", "türkiye"],
+  gr: ["greece", "griechenland"],
+  hr: ["croatia", "kroatien"],
+  sr: ["serbia", "serbien"],
+  ro: ["romania", "rumänien"],
+  hu: ["hungary", "ungarn"],
+  us: ["united states", "usa", "us", "america"],
+  ca: ["canada", "kanada"],
+  mx: ["mexico", "mexiko"],
+  br: ["brazil", "brasilien"],
+  ar: ["argentina", "argentinien"],
+  jp: ["japan"],
+  kr: ["south korea", "korea"],
+  au: ["australia", "australien"]
 };
 
 function getLeagueName(countryCode, level) {
@@ -52,9 +84,13 @@ document.addEventListener("DOMContentLoaded", () => {
     renderActiveTrip();
   }
 
-  // Automatische Wappen-Suche, sobald der Teamname verlassen wird
+  // Automatische Wappen-Suche bei Blur
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest("homeTeam", "homeLogo"));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest("awayTeam", "awayLogo"));
+  document.getElementById("stadiumAddress").addEventListener("blur", () => {
+    if (!document.getElementById("homeLogo").value.trim()) autoFetchCrest("homeTeam", "homeLogo");
+    if (!document.getElementById("awayLogo").value.trim()) autoFetchCrest("awayTeam", "awayLogo");
+  });
 });
 
 function initMap() {
@@ -146,6 +182,7 @@ function renderTripSelect() {
 
 // ---------- Geocoding (Nominatim) ----------
 async function geocodeAddress(address) {
+  if (!address || !address.trim()) return null;
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(address)}`;
   try {
     const response = await fetch(url);
@@ -165,8 +202,6 @@ async function geocodeAddress(address) {
   return null;
 }
 
-// zoom ~10 liefert eher eine Stadt/Ortschaft statt einer exakten Hausadresse -
-// das ist gewollt, damit der Übernachtungsvorschlag ein Ort mit Unterkünften ist.
 async function reverseGeocode(lat, lng, zoom = 10) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=${zoom}`;
   try {
@@ -181,23 +216,122 @@ async function reverseGeocode(lat, lng, zoom = 10) {
   }
 }
 
-// ---------- Automatische Wappen-Suche (TheSportsDB, kostenlos, kein Key nötig) ----------
+// ---------- Iterative Wappen-Suche & Länder-Validierung ----------
+
+// Prüft, ob das vom Verein gemeldete Land mit dem Land der Adresse übereinstimmt
+function isCountryMatch(teamCountry, targetCountryCode, targetCountryName) {
+  if (!targetCountryCode && !targetCountryName) {
+    return true; // Kein Land zur Validierung vorhanden -> akzeptieren
+  }
+
+  const teamC = (teamCountry || "").toLowerCase().trim();
+  if (!teamC) return true; // Falls die API kein Land liefert, ebenfalls zulassen
+
+  const code = (targetCountryCode || "").toLowerCase().trim();
+  const name = (targetCountryName || "").toLowerCase().trim();
+
+  // 1. Abgleich über ISO-Ländercode Mappings
+  if (code && COUNTRY_MAPPINGS[code]) {
+    if (COUNTRY_MAPPINGS[code].some(c => teamC.includes(c) || c.includes(teamC))) {
+      return true;
+    }
+  }
+
+  // 2. Direkter String-Abgleich mit Adresse/Land
+  if (name && (teamC.includes(name) || name.includes(teamC))) {
+    return true;
+  }
+  if (code && (teamC.includes(code) || code.includes(teamC))) {
+    return true;
+  }
+
+  return false;
+}
+
+// Generiert Suchkandidaten: Zuerst voller Name, dann Wörter einzeln (z.B. ["USL Dunkerque", "USL", "Dunkerque"])
+function generateSearchCandidates(inputName) {
+  const trimmed = inputName.trim();
+  if (!trimmed) return [];
+
+  const candidates = [trimmed];
+  const words = trimmed
+    .split(/\s+/)
+    .map(w => w.replace(/^[^\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+$/g, ''))
+    .filter(w => w.length > 1);
+
+  for (const word of words) {
+    if (!candidates.includes(word)) {
+      candidates.push(word);
+    }
+  }
+  return candidates;
+}
+
+// Sucht iterativ nach Wappen und validiert das Land
+async function fetchCrestForTeam(teamName, targetCountryCode, targetCountryName) {
+  if (!teamName || !teamName.trim()) return null;
+
+  const candidates = generateSearchCandidates(teamName);
+
+  for (const candidate of candidates) {
+    try {
+      const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(candidate)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data && data.teams && data.teams.length > 0) {
+        for (const team of data.teams) {
+          const rawBadge = team.strTeamBadge || team.strBadge;
+          if (!rawBadge) continue;
+
+          // Backslashes bereinigen
+          const cleanBadgeUrl = rawBadge.replace(/\\/g, '');
+
+          // Land validieren
+          if (isCountryMatch(team.strCountry, targetCountryCode, targetCountryName)) {
+            return cleanBadgeUrl;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Wappen-Suche Fehler für "${candidate}":`, err);
+    }
+  }
+  return null;
+}
+
+// Triggered per Blur-Event im Formular
 async function autoFetchCrest(nameInputId, logoInputId) {
   const logoInput = document.getElementById(logoInputId);
   const teamName = document.getElementById(nameInputId).value.trim();
   if (!teamName || logoInput.value.trim() !== "") return; // Manuelle Eingabe nicht überschreiben
 
-  try {
-    const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(teamName)}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data && data.teams && data.teams.length > 0 && data.teams[0].strTeamBadge) {
-      logoInput.value = data.teams[0].strTeamBadge;
-      logoInput.placeholder = "✓ automatisch gefunden";
+  let targetCountryCode = null;
+  let targetCountryName = null;
+
+  // 1. Prüfen, ob eine Stadionadresse angegeben ist
+  const stadiumAddr = document.getElementById("stadiumAddress").value.trim();
+  if (stadiumAddr) {
+    const coords = await geocodeAddress(stadiumAddr);
+    if (coords) {
+      targetCountryCode = coords.countryCode;
+      targetCountryName = coords.display;
     }
-  } catch (err) {
-    console.error("Wappen-Suche Fehler:", err);
-    // Kein Treffer/Fehler -> Feld bleibt leer, manuelle URL weiterhin möglich
+  }
+
+  // 2. Fallback auf Startadresse des Trips
+  if (!targetCountryCode) {
+    const trip = getActiveTrip();
+    if (trip && trip.startAddress) {
+      targetCountryCode = trip.startAddress.countryCode;
+      targetCountryName = trip.startAddress.address;
+    }
+  }
+
+  const crestUrl = await fetchCrestForTeam(teamName, targetCountryCode, targetCountryName);
+  if (crestUrl) {
+    logoInput.value = crestUrl;
+    logoInput.placeholder = "✓ automatisch gefunden";
   }
 }
 
@@ -211,7 +345,7 @@ async function setStartAddress() {
   const coords = await geocodeAddress(address);
   if (coords) {
     const trip = getActiveTrip();
-    trip.startAddress = { address, lat: coords.lat, lng: coords.lng };
+    trip.startAddress = { address, lat: coords.lat, lng: coords.lng, countryCode: coords.countryCode };
     saveLocalStorage();
     statusEl.innerText = "✓ Gespeichert!";
     renderActiveTrip();
@@ -234,12 +368,25 @@ async function addMatch(e) {
     return;
   }
 
+  const homeTeam = document.getElementById("homeTeam").value.trim();
+  const awayTeam = document.getElementById("awayTeam").value.trim();
+  let homeLogo = document.getElementById("homeLogo").value.trim().replace(/\\/g, '');
+  let awayLogo = document.getElementById("awayLogo").value.trim().replace(/\\/g, '');
+
+  // Falls Logos noch fehlen, direkt vor dem Speichern nochmals mit dem erkannten Land auflösen
+  if (!homeLogo) {
+    homeLogo = await fetchCrestForTeam(homeTeam, coords.countryCode, coords.display) || "";
+  }
+  if (!awayLogo) {
+    awayLogo = await fetchCrestForTeam(awayTeam, coords.countryCode, coords.display) || "";
+  }
+
   const match = {
     id: "m_" + Date.now(),
-    home: document.getElementById("homeTeam").value,
-    away: document.getElementById("awayTeam").value,
-    homeLogo: document.getElementById("homeLogo").value,
-    awayLogo: document.getElementById("awayLogo").value,
+    home: homeTeam,
+    away: awayTeam,
+    homeLogo: homeLogo,
+    awayLogo: awayLogo,
     leagueLevel: leagueLevel,
     countryCode: coords.countryCode,
     leagueName: getLeagueName(coords.countryCode, leagueLevel),
@@ -271,12 +418,15 @@ function deleteMatch(matchId) {
 
 // ---------- Crest Marker ----------
 function createCrestIcon(home, away, homeLogo, awayLogo) {
-  const homeContent = homeLogo
-    ? `<img src="${homeLogo}" alt="${escapeHtml(home)}"/>`
+  const cleanHomeLogo = homeLogo ? homeLogo.replace(/\\/g, '') : '';
+  const cleanAwayLogo = awayLogo ? awayLogo.replace(/\\/g, '') : '';
+
+  const homeContent = cleanHomeLogo
+    ? `<img src="${cleanHomeLogo}" alt="${escapeHtml(home)}"/>`
     : `<span class="badge">${escapeHtml(home.substring(0, 3).toUpperCase())}</span>`;
 
-  const awayContent = awayLogo
-    ? `<img src="${awayLogo}" alt="${escapeHtml(away)}"/>`
+  const awayContent = cleanAwayLogo
+    ? `<img src="${cleanAwayLogo}" alt="${escapeHtml(away)}"/>`
     : `<span class="badge">${escapeHtml(away.substring(0, 3).toUpperCase())}</span>`;
 
   return L.divIcon({
@@ -301,7 +451,7 @@ function renderActiveTrip() {
   document.getElementById("matchCount").innerText = trip.matches.length;
   document.getElementById("startAddress").value = trip.startAddress ? trip.startAddress.address : "";
 
-  renderMatchList(null, null); // neutral, ohne Auswahl-Status
+  renderMatchList(null, null);
 
   markersLayer.clearLayers();
 
@@ -331,8 +481,6 @@ function matchPopupHtml(m) {
     📅 ${m.date} um ${m.time} Uhr`;
 }
 
-// selectedIds: Set von Match-IDs, die im Ablaufplan gelandet sind (oder null = neutral)
-// droppedReasons: Map matchId -> Grund-Text (oder null)
 function renderMatchList(selectedIds, droppedReasons) {
   const trip = getActiveTrip();
   const matchList = document.getElementById("matchList");
@@ -382,11 +530,9 @@ async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = fals
   } catch (err) {
     console.error("OSRM Error:", err);
   }
-  return { durationMin: 60, geometry: null, steps: null }; // Fallback bei Netzwerkfehler
+  return { durationMin: 60, geometry: null, steps: null };
 }
 
-// Gecachte, reine Fahrzeit-Abfrage (ohne Geometrie) für die Tagesoptimierung -
-// vermeidet doppelte OSRM-Aufrufe bei O(n²)-Vergleichen innerhalb eines Tages.
 async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
   const key = `${lat1.toFixed(4)},${lng1.toFixed(4)}|${lat2.toFixed(4)},${lng2.toFixed(4)}`;
   if (travelCache.has(key)) return travelCache.get(key);
@@ -440,13 +586,10 @@ function timeToDateOnDay(dateStr, timeStr) {
 }
 
 function priorityScore(m) {
-  return 11 - m.leagueLevel; // niedrigeres Level (höhere Liga) = höherer Score als Tie-Breaker
+  return 11 - m.leagueLevel;
 }
 
-// ---------- Tagesoptimierung: maximale Spiele-Anzahl per Dynamic Programming ----------
-// segment: chronologisch sortierte Spiele-Liste des Tages (oder eines Teilabschnitts)
-// startLoc/startTime: Ort & früheste Verfügbarkeit vor dem ersten Spiel des Segments
-// Gibt dp-Array zurück: dp[j] = {count, score, prev} oder null (nicht erreichbar)
+// ---------- Tagesoptimierung (Dynamic Programming) ----------
 async function computeDayDP(segment, startLoc, startTime) {
   const n = segment.length;
   const dp = new Array(n).fill(null);
@@ -495,7 +638,6 @@ function reconstructChain(dp, segment, endIndex) {
   return idxChain.map(i => segment[i]);
 }
 
-// Bestmögliche Kette über das gesamte Segment (Ende offen) - für normale Tage/Tagesreste
 async function bestChainUnconstrained(segment, startLoc, startTime) {
   if (segment.length === 0) return { chain: [], usedIndices: new Set() };
   const dp = await computeDayDP(segment, startLoc, startTime);
@@ -511,7 +653,6 @@ async function bestChainUnconstrained(segment, startLoc, startTime) {
   return { chain, usedIndices: new Set(chain.map(m => m.id)) };
 }
 
-// Kette, die zwingend am letzten Element des Segments endet (Highlightspiel als Anker)
 async function bestChainEndingAtLast(segment, startLoc, startTime) {
   if (segment.length === 0) return { chain: [], usedIndices: new Set(), reachable: true };
   const dp = await computeDayDP(segment, startLoc, startTime);
@@ -521,8 +662,6 @@ async function bestChainEndingAtLast(segment, startLoc, startTime) {
   return { chain, usedIndices: new Set(chain.map(m => m.id)), reachable: true };
 }
 
-// Optimiert einen kompletten Tag: zerlegt an Highlightspielen in Segmente,
-// maximiert je Segment die Spiele-Anzahl und hängt alles aneinander.
 async function optimizeDayChain(dayMatches, startLoc, startTime) {
   const chain = [];
   const dropped = [];
@@ -534,14 +673,13 @@ async function optimizeDayChain(dayMatches, startLoc, startTime) {
   let currentTime = startTime;
 
   for (const mustIdx of mustIndices) {
-    if (mustIdx < cursor) continue; // bereits verarbeitet (z.B. doppelt markiert)
+    if (mustIdx < cursor) continue;
     const segment = dayMatches.slice(cursor, mustIdx + 1);
     const { chain: segChain, usedIndices, reachable } = await bestChainEndingAtLast(segment, currentLoc, currentTime);
 
     if (!reachable) {
       dropped.push({ match: dayMatches[mustIdx], reason: "Highlightspiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen." });
-      // Rest des Segments ohne Zwang neu optimieren, damit nicht alles verloren geht
-      const fallbackSegment = dayMatches.slice(cursor, mustIdx); // ohne das nicht erreichbare Highlightspiel
+      const fallbackSegment = dayMatches.slice(cursor, mustIdx);
       const { chain: fbChain, usedIndices: fbUsed } = await bestChainUnconstrained(fallbackSegment, currentLoc, currentTime);
       chain.push(...fbChain);
       fallbackSegment.forEach(m => {
@@ -685,9 +823,6 @@ async function buildOptimizedSchedule(trip) {
     if (nextDate) {
       const lastOfDay = chain.length > 0 ? chain[chain.length - 1] : null;
       const nextDayMatches = byDate.get(nextDate);
-      // Für die Übernachtungs-Grobplanung wird das chronologisch erste Spiel des
-      // Folgetags als Zielpunkt angenommen - die tatsächliche Tagesauswahl für
-      // den Folgetag wird danach unabhängig per DP bestimmt.
       const nextGuess = nextDayMatches[0];
 
       if (lastOfDay && nextGuess) {
@@ -700,8 +835,6 @@ async function buildOptimizedSchedule(trip) {
         }
         currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
       } else {
-        // An diesem Tag wurde kein Spiel ausgewählt - Startpunkt bleibt unverändert,
-        // nur die Zeit springt auf den nächsten Morgen.
         currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
       }
     }
@@ -728,7 +861,6 @@ async function calculateRoute() {
 
   const { selected: selectedMatches, dropped } = await buildOptimizedSchedule(trip);
 
-  // Sidebar: ausgewählte Spiele grün, aussortierte grau markieren
   const selectedIds = new Set(selectedMatches.map(m => m.id));
   const droppedReasons = new Map(dropped.map(d => [d.match.id, d.reason]));
   renderMatchList(selectedIds, droppedReasons);
