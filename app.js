@@ -156,11 +156,29 @@ async function geocodeAddress(address) {
     const data = await response.json();
     if (data && data.length > 0) {
       const r = data[0];
+      const addr = r.address || {};
+
+      // 1. Straße & Hausnummer
+      const street = addr.road || addr.pedestrian || addr.street || "";
+      const houseNumber = addr.house_number ? ` ${addr.house_number}` : "";
+      const streetStr = street ? `${street}${houseNumber}` : "";
+
+      // 2. PLZ & Stadt
+      const postcode = addr.postcode || "";
+      const city = addr.city || addr.town || addr.village || addr.municipality || addr.county || "";
+      const cityStr = [postcode, city].filter(Boolean).join(" ");
+
+      // 3. Land
+      const country = addr.country || "";
+
+      // Format: "Straße Hausnummer, PLZ Stadt, Land"
+      const formattedAddress = [streetStr, cityStr, country].filter(Boolean).join(", ");
+
       return {
         lat: parseFloat(r.lat),
         lng: parseFloat(r.lon),
-        display: r.display_name,
-        countryCode: r.address ? (r.address.country_code || null) : null
+        display: formattedAddress || r.display_name,
+        countryCode: addr.country_code || null
       };
     }
   } catch (err) {
