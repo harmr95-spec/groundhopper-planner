@@ -15,6 +15,7 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
+let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
 
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
@@ -492,33 +493,7 @@ function renderActiveTrip() {
 
   renderMatchList(null, null);
 
-  markersLayer.clearLayers();
-
-  if (trip.startAddress) {
-    L.marker([trip.startAddress.lat, trip.startAddress.lng])
-      .bindPopup(`<b>Startpunkt:</b> ${escapeHtml(trip.startAddress.address)}`)
-      .addTo(markersLayer);
-  }
-
-  trip.matches.forEach(m => {
-    const marker = L.marker([m.lat, m.lng], {
-      icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo)
-    }).addTo(markersLayer);
-
-    marker.bindPopup(matchPopupHtml(m));
-
-    // Lädt die Adresse beim Klick auf ein Icon automatisch nach, falls sie fehlt
-    marker.on('popupopen', async () => {
-      if (!m.resolvedAddress && m.stadium) {
-        const coords = await geocodeAddress(m.stadium);
-        if (coords && coords.display) {
-          m.resolvedAddress = coords.display;
-          saveLocalStorage();
-          marker.getPopup().setContent(matchPopupHtml(m));
-        }
-      }
-    });
-  });
+updateMapMarkers();
 
   document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
   document.getElementById("droppedSection").innerHTML = '';
@@ -915,9 +890,8 @@ async function calculateRoute() {
   routeLayer.clearLayers();
   travelCache.clear();
 
-  const { selected: selectedMatches, dropped } = await buildOptimizedSchedule(trip);
-
-  const selectedIds = new Set(selectedMatches.map(m => m.id));
+  lastSelectedMatchIds = selectedIds; // IDs der berechneten Spiele merken
+  updateMapMarkers(); // Marker auf der Karte aktualisieren
   const droppedReasons = new Map(dropped.map(d => [d.match.id, d.reason]));
   renderMatchList(selectedIds, droppedReasons);
 
@@ -1128,4 +1102,48 @@ function importTrip(event) {
   };
 
   reader.readAsText(file);
+}
+
+function updateMapMarkers() {
+  const trip = getActiveTrip();
+  if (!trip) return;
+
+  markersLayer.clearLayers();
+
+  // 1. Startadresse einzeichnen
+  if (trip.startAddress) {
+    L.marker([trip.startAddress.lat, trip.startAddress.lng])
+      .bindPopup(`<b>Startpunkt:</b> ${escapeHtml(trip.startAddress.address)}`)
+      .addTo(markersLayer);
+  }
+
+  // 2. Prüfen, ob der Filter aktiv ist
+  const toggleEl = document.getElementById("showOnlySelectedToggle");
+  const filterActive = toggleEl ? toggleEl.checked : false;
+
+  // 3. Spiele auf der Karte rendern
+  trip.matches.forEach(m => {
+    // Wenn der Filter aktiv ist und eine Berechnung vorliegt, nicht-ausgewählte Spiele überspringen
+    if (filterActive && lastSelectedMatchIds && !lastSelectedMatchIds.has(m.id)) {
+      return;
+    }
+
+    const marker = L.marker([m.lat, m.lng], {
+      icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo)
+    }).addTo(markersLayer);
+
+    marker.bindPopup(matchPopupHtml(m));
+
+    // Adresse nachladen beim Klick
+    marker.on('popupopen', async () => {
+      if (!m.resolvedAddress && m.stadium) {
+        const coords = await geocodeAddress(m.stadium);
+        if (coords && coords.display) {
+          m.resolvedAddress = coords.display;
+          saveLocalStorage();
+          marker.getPopup().setContent(matchPopupHtml(m));
+        }
+      }
+    });
+  });
 }
