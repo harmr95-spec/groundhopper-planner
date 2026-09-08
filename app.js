@@ -483,11 +483,23 @@ function renderActiveTrip() {
   }
 
   trip.matches.forEach(m => {
-    L.marker([m.lat, m.lng], {
+    const marker = L.marker([m.lat, m.lng], {
       icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo)
-    })
-      .bindPopup(matchPopupHtml(m))
-      .addTo(markersLayer);
+    }).addTo(markersLayer);
+
+    marker.bindPopup(matchPopupHtml(m));
+
+    // Lädt die Adresse beim Klick auf ein Icon automatisch nach, falls sie fehlt
+    marker.on('popupopen', async () => {
+      if (!m.resolvedAddress && m.stadium) {
+        const coords = await geocodeAddress(m.stadium);
+        if (coords && coords.display) {
+          m.resolvedAddress = coords.display;
+          saveLocalStorage();
+          marker.getPopup().setContent(matchPopupHtml(m));
+        }
+      }
+    });
   });
 
   document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
@@ -496,11 +508,11 @@ function renderActiveTrip() {
 }
 
 function matchPopupHtml(m) {
-  const fullAddress = m.resolvedAddress ? `<br>🗺️ <small>${escapeHtml(m.resolvedAddress)}</small>` : '';
-  
+  const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
+
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-    📍 <b>${escapeHtml(m.stadium)}</b>${fullAddress}<br>
+    🏟️ <b>${escapeHtml(m.stadium)}</b>${fullAddress}<br>
     📅 ${m.date} um ${m.time} Uhr`;
 }
 
