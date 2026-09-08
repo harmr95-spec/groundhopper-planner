@@ -64,11 +64,15 @@
             <input type="text" id="stadiumAddress" placeholder="Stadion / Adresse *" required />
           </div>
           <details class="advanced-settings">
-            <summary>Eigene Pufferzeiten für dieses Spiel (optional)</summary>
+            <summary>Weitere Optionen (optional)</summary>
             <div class="form-row">
               <input type="number" id="customArrivalBuffer" placeholder="Anreise (Min.)" min="0" />
               <input type="number" id="customDepartureBuffer" placeholder="Abreise (Min.)" min="0" />
             </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="mustAttend" />
+              ⭐ Muss-Spiel – auf jeden Fall einplanen, Rest wird darum herum optimiert
+            </label>
           </details>
           <button type="submit" class="btn btn-primary">Spiel hinzufügen</button>
         </form>
