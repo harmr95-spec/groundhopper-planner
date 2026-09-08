@@ -14,6 +14,7 @@ let state = {
 
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
+let editingMatchId = null;
 
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
@@ -135,6 +136,7 @@ function deleteActiveTrip() {
 function switchTrip() {
   state.activeTripId = document.getElementById("tripSelect").value;
   saveLocalStorage();
+  resetMatchForm();
   renderActiveTrip();
 }
 
@@ -214,7 +216,7 @@ async function fetchCrestForTeam(teamName) {
         for (const team of data.teams) {
           const rawBadge = team.strTeamBadge || team.strBadge;
           if (rawBadge) {
-            return rawBadge.replace(/\\/g, ''); // Backslashes bereinigen
+            return rawBadge.replace(/\\/g, '');
           }
         }
       }
@@ -232,7 +234,6 @@ async function autoFetchCrest(type) {
   const manualGroup = document.getElementById(`${type}LogoGroup`);
   const teamName = teamInput.value.trim();
 
-  // 1. Wenn Feld leer ist: Beide Elemente ausblenden
   if (!teamName) {
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "none";
@@ -242,11 +243,9 @@ async function autoFetchCrest(type) {
   const crestUrl = await fetchCrestForTeam(teamName);
 
   if (crestUrl) {
-    // 2. Wappen gefunden: Vorschau zeigen, manuelles Feld verbergen
     logoInput.value = crestUrl;
     showCrestPreview(type, crestUrl);
   } else {
-    // 3. Kein Wappen gefunden: Vorschau verbergen, manuelles Feld einblenden
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "block";
   }
@@ -290,6 +289,7 @@ function updateCrestPreview(type) {
     hideCrestPreview(type);
   }
 }
+
 async function setStartAddress() {
   const address = document.getElementById("startAddress").value;
   if (!address) return;
@@ -313,6 +313,7 @@ async function setStartAddress() {
 async function addMatch(e) {
   e.preventDefault();
   const trip = getActiveTrip();
+  if (!trip) return;
 
   const stadiumAddr = document.getElementById("stadiumAddress").value;
   const leagueLevel = parseInt(document.getElementById("leagueLevel").value);
@@ -335,8 +336,8 @@ async function addMatch(e) {
     awayLogo = await fetchCrestForTeam(awayTeam) || "";
   }
 
-  const match = {
-    id: "m_" + Date.now(),
+  const matchData = {
+    id: editingMatchId || ("m_" + Date.now()),
     home: homeTeam,
     away: awayTeam,
     homeLogo: homeLogo,
@@ -354,20 +355,80 @@ async function addMatch(e) {
     customDepartureBuffer: document.getElementById("customDepartureBuffer").value ? parseInt(document.getElementById("customDepartureBuffer").value) : null
   };
 
-  trip.matches.push(match);
-  saveLocalStorage();
-  
-  // Formular zurücksetzen & UI aufräumen
-  document.getElementById("matchForm").reset();
-  hideCrestPreview('home');
-  hideCrestPreview('away');
-  document.getElementById("homeLogoGroup").style.display = "none";
-  document.getElementById("awayLogoGroup").style.display = "none";
+  if (editingMatchId) {
+    const index = trip.matches.findIndex(m => m.id === editingMatchId);
+    if (index !== -1) {
+      trip.matches[index] = matchData;
+    }
+  } else {
+    trip.matches.push(matchData);
+  }
 
+  saveLocalStorage();
+  resetMatchForm();
   renderActiveTrip();
 }
 
+function editMatch(matchId) {
+  const trip = getActiveTrip();
+  if (!trip) return;
+
+  const match = trip.matches.find(m => m.id === matchId);
+  if (!match) return;
+
+  editingMatchId = match.id;
+
+  document.getElementById("homeTeam").value = match.home || "";
+  document.getElementById("awayTeam").value = match.away || "";
+  document.getElementById("homeLogo").value = match.homeLogo || "";
+  document.getElementById("awayLogo").value = match.awayLogo || "";
+  document.getElementById("leagueLevel").value = match.leagueLevel || 1;
+  document.getElementById("matchDate").value = match.date || "";
+  document.getElementById("matchTime").value = match.time || "";
+  document.getElementById("stadiumAddress").value = match.stadium || "";
+  document.getElementById("customArrivalBuffer").value = match.customArrivalBuffer ?? "";
+  document.getElementById("customDepartureBuffer").value = match.customDepartureBuffer ?? "";
+  document.getElementById("mustAttend").checked = !!match.mustAttend;
+
+  if (match.homeLogo) {
+    showCrestPreview('home', match.homeLogo);
+  } else {
+    autoFetchCrest('home');
+  }
+
+  if (match.awayLogo) {
+    showCrestPreview('away', match.awayLogo);
+  } else {
+    autoFetchCrest('away');
+  }
+
+  const submitBtn = document.querySelector("#matchForm button[type='submit']");
+  if (submitBtn) submitBtn.textContent = "Spiel speichern";
+
+  const formEl = document.getElementById("matchForm");
+  if (formEl) formEl.scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetMatchForm() {
+  editingMatchId = null;
+  document.getElementById("matchForm").reset();
+  
+  hideCrestPreview('home');
+  hideCrestPreview('away');
+
+  const homeGroup = document.getElementById("homeLogoGroup");
+  const awayGroup = document.getElementById("awayLogoGroup");
+  if (homeGroup) homeGroup.style.display = "none";
+  if (awayGroup) awayGroup.style.display = "none";
+
+  const submitBtn = document.querySelector("#matchForm button[type='submit']");
+  if (submitBtn) submitBtn.textContent = "Spiel hinzufügen";
+}
+
 function deleteMatch(matchId) {
+  if (editingMatchId === matchId) {
+    resetMatchForm();
+  }
   const trip = getActiveTrip();
   trip.matches = trip.matches.filter(m => m.id !== matchId);
   delete trip.overnightOverrides[matchId];
@@ -465,7 +526,10 @@ function renderMatchList(selectedIds, droppedReasons) {
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
       📍 ${escapeHtml(m.stadium)}
       ${reasonHtml}
-      <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red; margin-top:0.4rem;">Löschen</button>
+      <div style="margin-top:0.4rem; display:flex; gap:0.4rem;">
+        <button onclick="editMatch('${m.id}')" class="btn btn-small">Bearbeiten</button>
+        <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red;">Löschen</button>
+      </div>
     </li>
   `;
     }).join('');
