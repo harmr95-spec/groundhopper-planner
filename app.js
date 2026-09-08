@@ -13,6 +13,33 @@ let state = {
 };
 
 let map, markersLayer, routeLayer;
+let travelCache = new Map(); // wird pro Berechnung geleert, vermeidet doppelte OSRM-Aufrufe
+
+// Liga-Namen je Land (ISO-3166-1 alpha-2, lowercase, wie von Nominatim geliefert) und Level.
+// Bewusst begrenzt auf gängige Groundhopping-Länder - bei unbekannten Kombinationen
+// wird generisch "Liga-Level X" angezeigt.
+const LEAGUE_NAMES = {
+  de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
+  nl: { 1: "Eredivisie", 2: "Eerste Divisie", 3: "Tweede Divisie", 4: "Derde Divisie", 5: "Vierde Divisie", 6: "Vijfde Divisie o. niedriger" },
+  gb: { 1: "Premier League", 2: "Championship", 3: "League One", 4: "League Two", 5: "National League", 6: "National League N/S o. niedriger" },
+  be: { 1: "Jupiler Pro League", 2: "Challenger Pro League", 3: "National Division 1", 4: "Division 2 Amateur", 5: "Division 3 Amateur" },
+  fr: { 1: "Ligue 1", 2: "Ligue 2", 3: "National", 4: "National 2", 5: "National 3" },
+  es: { 1: "La Liga", 2: "La Liga 2", 3: "Primera Federación", 4: "Segunda Federación", 5: "Tercera Federación" },
+  it: { 1: "Serie A", 2: "Serie B", 3: "Serie C", 4: "Serie D", 5: "Eccellenza" },
+  at: { 1: "Bundesliga (AT)", 2: "2. Liga", 3: "Regionalliga", 4: "Landesliga" },
+  ch: { 1: "Super League", 2: "Challenge League", 3: "Promotion League", 4: "1. Liga" },
+  pt: { 1: "Primeira Liga", 2: "Liga Portugal 2", 3: "Campeonato de Portugal", 4: "Divisão de Honra" },
+  pl: { 1: "Ekstraklasa", 2: "I liga", 3: "II liga", 4: "III liga" },
+  dk: { 1: "Superliga", 2: "1. Division", 3: "2. Division" }
+};
+
+function getLeagueName(countryCode, level) {
+  const cc = (countryCode || "").toLowerCase();
+  if (LEAGUE_NAMES[cc] && LEAGUE_NAMES[cc][level]) {
+    return LEAGUE_NAMES[cc][level];
+  }
+  return `Liga-Level ${level}`;
+}
 
 // ---------- Initialization ----------
 document.addEventListener("DOMContentLoaded", () => {
@@ -24,6 +51,10 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTripSelect();
     renderActiveTrip();
   }
+
+  // Automatische Wappen-Suche, sobald der Teamname verlassen wird
+  document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest("homeTeam", "homeLogo"));
+  document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest("awayTeam", "awayLogo"));
 });
 
 function initMap() {
@@ -41,7 +72,6 @@ function loadLocalStorage() {
   const data = localStorage.getItem("groundhopping_data");
   if (data) {
     const parsed = JSON.parse(data);
-    // Merge, damit neue Settings-Felder bei alten gespeicherten Daten nicht fehlen
     state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
   }
 }
@@ -64,7 +94,7 @@ function createNewTrip(defaultName = null) {
     name: name,
     startAddress: null,
     matches: [],
-    overnightOverrides: {} // { [matchId]: {address, lat, lng} }
+    overnightOverrides: {}
   };
 
   state.trips.push(newTrip);
@@ -116,12 +146,18 @@ function renderTripSelect() {
 
 // ---------- Geocoding (Nominatim) ----------
 async function geocodeAddress(address) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(address)}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
     if (data && data.length > 0) {
-      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), display: data[0].display_name };
+      const r = data[0];
+      return {
+        lat: parseFloat(r.lat),
+        lng: parseFloat(r.lon),
+        display: r.display_name,
+        countryCode: r.address ? (r.address.country_code || null) : null
+      };
     }
   } catch (err) {
     console.error("Geocoding Error:", err);
@@ -130,8 +166,7 @@ async function geocodeAddress(address) {
 }
 
 // zoom ~10 liefert eher eine Stadt/Ortschaft statt einer exakten Hausadresse -
-// das ist gewollt, damit der Übernachtungsvorschlag ein Ort mit Unterkünften ist,
-// keine zufällige Stelle auf freier Strecke.
+// das ist gewollt, damit der Übernachtungsvorschlag ein Ort mit Unterkünften ist.
 async function reverseGeocode(lat, lng, zoom = 10) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=${zoom}`;
   try {
@@ -143,6 +178,26 @@ async function reverseGeocode(lat, lng, zoom = 10) {
   } catch (err) {
     console.error("Reverse-Geocoding Error:", err);
     return null;
+  }
+}
+
+// ---------- Automatische Wappen-Suche (TheSportsDB, kostenlos, kein Key nötig) ----------
+async function autoFetchCrest(nameInputId, logoInputId) {
+  const logoInput = document.getElementById(logoInputId);
+  const teamName = document.getElementById(nameInputId).value.trim();
+  if (!teamName || logoInput.value.trim() !== "") return; // Manuelle Eingabe nicht überschreiben
+
+  try {
+    const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(teamName)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data && data.teams && data.teams.length > 0 && data.teams[0].strTeamBadge) {
+      logoInput.value = data.teams[0].strTeamBadge;
+      logoInput.placeholder = "✓ automatisch gefunden";
+    }
+  } catch (err) {
+    console.error("Wappen-Suche Fehler:", err);
+    // Kein Treffer/Fehler -> Feld bleibt leer, manuelle URL weiterhin möglich
   }
 }
 
@@ -171,6 +226,7 @@ async function addMatch(e) {
   const trip = getActiveTrip();
 
   const stadiumAddr = document.getElementById("stadiumAddress").value;
+  const leagueLevel = parseInt(document.getElementById("leagueLevel").value);
   const coords = await geocodeAddress(stadiumAddr);
 
   if (!coords) {
@@ -184,12 +240,15 @@ async function addMatch(e) {
     away: document.getElementById("awayTeam").value,
     homeLogo: document.getElementById("homeLogo").value,
     awayLogo: document.getElementById("awayLogo").value,
-    leagueLevel: parseInt(document.getElementById("leagueLevel").value),
+    leagueLevel: leagueLevel,
+    countryCode: coords.countryCode,
+    leagueName: getLeagueName(coords.countryCode, leagueLevel),
     date: document.getElementById("matchDate").value,
     time: document.getElementById("matchTime").value,
     stadium: stadiumAddr,
     lat: coords.lat,
     lng: coords.lng,
+    mustAttend: document.getElementById("mustAttend").checked,
     customArrivalBuffer: document.getElementById("customArrivalBuffer").value ? parseInt(document.getElementById("customArrivalBuffer").value) : null,
     customDepartureBuffer: document.getElementById("customDepartureBuffer").value ? parseInt(document.getElementById("customDepartureBuffer").value) : null
   };
@@ -197,6 +256,8 @@ async function addMatch(e) {
   trip.matches.push(match);
   saveLocalStorage();
   document.getElementById("matchForm").reset();
+  document.getElementById("homeLogo").placeholder = "Wappen URL Heim (optional)";
+  document.getElementById("awayLogo").placeholder = "Wappen URL Auswärts (optional)";
   renderActiveTrip();
 }
 
@@ -240,18 +301,7 @@ function renderActiveTrip() {
   document.getElementById("matchCount").innerText = trip.matches.length;
   document.getElementById("startAddress").value = trip.startAddress ? trip.startAddress.address : "";
 
-  const matchList = document.getElementById("matchList");
-  matchList.innerHTML = trip.matches
-    .slice()
-    .sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`))
-    .map(m => `
-    <li class="card" style="margin-bottom:0.5rem; padding:0.75rem;">
-      <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> (L${m.leagueLevel})<br>
-      📅 ${m.date} - ⏰ ${m.time} Uhr<br>
-      📍 ${escapeHtml(m.stadium)}
-      <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red; margin-top:0.4rem;">Löschen</button>
-    </li>
-  `).join('');
+  renderMatchList(null, null); // neutral, ohne Auswahl-Status
 
   markersLayer.clearLayers();
 
@@ -265,13 +315,53 @@ function renderActiveTrip() {
     L.marker([m.lat, m.lng], {
       icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo)
     })
-      .bindPopup(`<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b><br>Liga Level: ${m.leagueLevel}<br>${m.date} um ${m.time}`)
+      .bindPopup(matchPopupHtml(m))
       .addTo(markersLayer);
   });
 
   document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
   document.getElementById("droppedSection").innerHTML = '';
   routeLayer.clearLayers();
+}
+
+function matchPopupHtml(m) {
+  return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
+    ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
+    📍 ${escapeHtml(m.stadium)}<br>
+    📅 ${m.date} um ${m.time} Uhr`;
+}
+
+// selectedIds: Set von Match-IDs, die im Ablaufplan gelandet sind (oder null = neutral)
+// droppedReasons: Map matchId -> Grund-Text (oder null)
+function renderMatchList(selectedIds, droppedReasons) {
+  const trip = getActiveTrip();
+  const matchList = document.getElementById("matchList");
+  matchList.innerHTML = trip.matches
+    .slice()
+    .sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`))
+    .map(m => {
+      let statusClass = "";
+      let reasonHtml = "";
+      if (selectedIds) {
+        if (selectedIds.has(m.id)) {
+          statusClass = "status-selected";
+        } else {
+          statusClass = "status-dropped";
+          const reason = droppedReasons ? droppedReasons.get(m.id) : null;
+          if (reason) reasonHtml = `<div class="reason" style="text-decoration:none;">${escapeHtml(reason)}</div>`;
+        }
+      }
+      return `
+    <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
+      <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
+      ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
+      📅 ${m.date} - ⏰ ${m.time} Uhr<br>
+      📍 ${escapeHtml(m.stadium)}
+      ${reasonHtml}
+      <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red; margin-top:0.4rem;">Löschen</button>
+    </li>
+  `;
+    }).join('');
 }
 
 // ---------- OSRM Routing ----------
@@ -295,8 +385,16 @@ async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = fals
   return { durationMin: 60, geometry: null, steps: null }; // Fallback bei Netzwerkfehler
 }
 
-// Findet die ungefähre Koordinate, die nach "targetSec" Sekunden Fahrzeit
-// entlang der Route erreicht wird (für den Übernachtungsvorschlag).
+// Gecachte, reine Fahrzeit-Abfrage (ohne Geometrie) für die Tagesoptimierung -
+// vermeidet doppelte OSRM-Aufrufe bei O(n²)-Vergleichen innerhalb eines Tages.
+async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
+  const key = `${lat1.toFixed(4)},${lng1.toFixed(4)}|${lat2.toFixed(4)},${lng2.toFixed(4)}`;
+  if (travelCache.has(key)) return travelCache.get(key);
+  const result = await getOSRMRoute(lat1, lng1, lat2, lng2);
+  travelCache.set(key, result.durationMin);
+  return result.durationMin;
+}
+
 function findPointAtTime(steps, targetSec) {
   if (!steps || steps.length === 0) return null;
   let cumulative = 0;
@@ -341,67 +439,141 @@ function timeToDateOnDay(dateStr, timeStr) {
   return d;
 }
 
-// ---------- Konflikt-Auflösung (gleicher Tag) ----------
-async function resolveConflicts(sortedMatches) {
-  const selected = []; // { match, travelMin, slackMin }
-  const dropped = [];
+function priorityScore(m) {
+  return 11 - m.leagueLevel; // niedrigeres Level (höhere Liga) = höherer Score als Tie-Breaker
+}
 
-  for (const match of sortedMatches) {
-    if (selected.length === 0) {
-      selected.push({ match, travelMin: 0, slackMin: Infinity });
-      continue;
-    }
+// ---------- Tagesoptimierung: maximale Spiele-Anzahl per Dynamic Programming ----------
+// segment: chronologisch sortierte Spiele-Liste des Tages (oder eines Teilabschnitts)
+// startLoc/startTime: Ort & früheste Verfügbarkeit vor dem ersten Spiel des Segments
+// Gibt dp-Array zurück: dp[j] = {count, score, prev} oder null (nicht erreichbar)
+async function computeDayDP(segment, startLoc, startTime) {
+  const n = segment.length;
+  const dp = new Array(n).fill(null);
 
-    const prevEntry = selected[selected.length - 1];
-    const prev = prevEntry.match;
-
-    if (match.date !== prev.date) {
-      // Anderer Tag -> kein direkter Zeitkonflikt, Übernachtungslogik übernimmt später
-      selected.push({ match, travelMin: null, slackMin: null });
-      continue;
-    }
-
-    const prevEnd = calculateMatchEndTime(prev);
-    const osrm = await getOSRMRoute(prev.lat, prev.lng, match.lat, match.lng);
-    const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
-    const kickoff = new Date(`${match.date}T${match.time}`);
+  for (let j = 0; j < n; j++) {
+    const m = segment[j];
+    const arrBuffer = m.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+    const kickoff = new Date(`${m.date}T${m.time}`);
     const requiredArrival = new Date(kickoff.getTime() - arrBuffer * 60000);
-    const earliestArrival = new Date(prevEnd.getTime() + osrm.durationMin * 60000);
-    const slackMin = (requiredArrival - earliestArrival) / 60000;
 
-    if (slackMin < 0) {
-      // Konflikt: nicht rechtzeitig erreichbar
-      let keepNew;
-      if (match.leagueLevel < prev.leagueLevel) {
-        keepNew = true;
-      } else if (match.leagueLevel > prev.leagueLevel) {
-        keepNew = false;
-      } else {
-        // Gleiches Level: mehr Zeitpuffer gewinnt, sonst kürzere Fahrzeit
-        if (slackMin > prevEntry.slackMin) keepNew = true;
-        else if (slackMin < prevEntry.slackMin) keepNew = false;
-        else keepNew = osrm.durationMin < (prevEntry.travelMin ?? Infinity);
-      }
+    let best = null;
 
-      if (keepNew) {
-        selected.pop();
-        dropped.push({
-          match: prev,
-          reason: `Zeitkonflikt mit ${match.home} vs. ${match.away} (Liga-Level ${match.leagueLevel}) – nicht rechtzeitig zu beiden Spielen möglich.`
-        });
-        selected.push({ match, travelMin: osrm.durationMin, slackMin });
-      } else {
-        dropped.push({
-          match,
-          reason: `Zeitkonflikt mit ${prev.home} vs. ${prev.away} (Liga-Level ${prev.leagueLevel}) – Anfahrt reicht zeitlich nicht.`
-        });
+    const travelFromStart = await getCachedTravelMin(startLoc.lat, startLoc.lng, m.lat, m.lng);
+    const earliestFromStart = new Date(startTime.getTime() + travelFromStart * 60000);
+    if (earliestFromStart <= requiredArrival) {
+      best = { count: 1, score: priorityScore(m), prev: -1 };
+    }
+
+    for (let i = 0; i < j; i++) {
+      if (!dp[i]) continue;
+      const prevMatch = segment[i];
+      const prevEnd = calculateMatchEndTime(prevMatch);
+      const travel = await getCachedTravelMin(prevMatch.lat, prevMatch.lng, m.lat, m.lng);
+      const earliest = new Date(prevEnd.getTime() + travel * 60000);
+      if (earliest <= requiredArrival) {
+        const candCount = dp[i].count + 1;
+        const candScore = dp[i].score + priorityScore(m);
+        if (!best || candCount > best.count || (candCount === best.count && candScore > best.score)) {
+          best = { count: candCount, score: candScore, prev: i };
+        }
       }
-    } else {
-      selected.push({ match, travelMin: osrm.durationMin, slackMin });
+    }
+    dp[j] = best;
+  }
+  return dp;
+}
+
+function reconstructChain(dp, segment, endIndex) {
+  const idxChain = [];
+  let cur = endIndex;
+  while (cur !== -1) {
+    idxChain.push(cur);
+    cur = dp[cur].prev;
+  }
+  idxChain.reverse();
+  return idxChain.map(i => segment[i]);
+}
+
+// Bestmögliche Kette über das gesamte Segment (Ende offen) - für normale Tage/Tagesreste
+async function bestChainUnconstrained(segment, startLoc, startTime) {
+  if (segment.length === 0) return { chain: [], usedIndices: new Set() };
+  const dp = await computeDayDP(segment, startLoc, startTime);
+  let bestIdx = -1;
+  for (let j = 0; j < dp.length; j++) {
+    if (!dp[j]) continue;
+    if (bestIdx === -1 || dp[j].count > dp[bestIdx].count || (dp[j].count === dp[bestIdx].count && dp[j].score > dp[bestIdx].score)) {
+      bestIdx = j;
     }
   }
+  if (bestIdx === -1) return { chain: [], usedIndices: new Set() };
+  const chain = reconstructChain(dp, segment, bestIdx);
+  return { chain, usedIndices: new Set(chain.map(m => m.id)) };
+}
 
-  return { selected: selected.map(s => s.match), dropped };
+// Kette, die zwingend am letzten Element des Segments endet (Muss-Spiel als Anker)
+async function bestChainEndingAtLast(segment, startLoc, startTime) {
+  if (segment.length === 0) return { chain: [], usedIndices: new Set(), reachable: true };
+  const dp = await computeDayDP(segment, startLoc, startTime);
+  const lastIdx = segment.length - 1;
+  if (!dp[lastIdx]) return { chain: [], usedIndices: new Set(), reachable: false };
+  const chain = reconstructChain(dp, segment, lastIdx);
+  return { chain, usedIndices: new Set(chain.map(m => m.id)), reachable: true };
+}
+
+// Optimiert einen kompletten Tag: zerlegt an Muss-Spielen in Segmente,
+// maximiert je Segment die Spiele-Anzahl und hängt alles aneinander.
+async function optimizeDayChain(dayMatches, startLoc, startTime) {
+  const chain = [];
+  const dropped = [];
+  const mustIndices = [];
+  dayMatches.forEach((m, i) => { if (m.mustAttend) mustIndices.push(i); });
+
+  let cursor = 0;
+  let currentLoc = startLoc;
+  let currentTime = startTime;
+
+  for (const mustIdx of mustIndices) {
+    if (mustIdx < cursor) continue; // bereits verarbeitet (z.B. doppelt markiert)
+    const segment = dayMatches.slice(cursor, mustIdx + 1);
+    const { chain: segChain, usedIndices, reachable } = await bestChainEndingAtLast(segment, currentLoc, currentTime);
+
+    if (!reachable) {
+      dropped.push({ match: dayMatches[mustIdx], reason: "Muss-Spiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen." });
+      // Rest des Segments ohne Zwang neu optimieren, damit nicht alles verloren geht
+      const fallbackSegment = dayMatches.slice(cursor, mustIdx); // ohne das nicht erreichbare Muss-Spiel
+      const { chain: fbChain, usedIndices: fbUsed } = await bestChainUnconstrained(fallbackSegment, currentLoc, currentTime);
+      chain.push(...fbChain);
+      fallbackSegment.forEach(m => {
+        if (!fbUsed.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar." });
+      });
+      if (fbChain.length > 0) {
+        const last = fbChain[fbChain.length - 1];
+        currentLoc = { lat: last.lat, lng: last.lng };
+        currentTime = calculateMatchEndTime(last);
+      }
+    } else {
+      chain.push(...segChain);
+      segment.forEach(m => {
+        if (!usedIndices.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar (Muss-Spiel hat Vorrang)." });
+      });
+      const last = segChain[segChain.length - 1];
+      currentLoc = { lat: last.lat, lng: last.lng };
+      currentTime = calculateMatchEndTime(last);
+    }
+    cursor = mustIdx + 1;
+  }
+
+  const tail = dayMatches.slice(cursor);
+  if (tail.length > 0) {
+    const { chain: tailChain, usedIndices } = await bestChainUnconstrained(tail, currentLoc, currentTime);
+    chain.push(...tailChain);
+    tail.forEach(m => {
+      if (!usedIndices.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar – Auswahl maximiert stattdessen die Anzahl möglicher Spiele." });
+    });
+  }
+
+  return { chain, dropped };
 }
 
 // ---------- Übernachtungslogik ----------
@@ -434,13 +606,9 @@ async function planOvernight(prevMatch, nextMatch) {
     for (let extra = 15; extra <= maxExtra; extra += 15) {
       const extendedCutoff = new Date(nightCutoff.getTime() + extra * 60000);
       const r = computeFeasibility(extendedCutoff);
-      if (r.feasible) {
-        result = r;
-        extraMinutesUsed = extra;
-        break;
-      }
-      result = r; // letzte (schlechteste) Berechnung merken, falls gar nichts reicht
+      result = r;
       extraMinutesUsed = extra;
+      if (r.feasible) break;
     }
   }
 
@@ -470,7 +638,6 @@ async function planOvernight(prevMatch, nextMatch) {
   };
 }
 
-// ---------- Übernachtungs-Override speichern ----------
 async function saveOvernightOverride(matchId, inputElId) {
   const trip = getActiveTrip();
   const address = document.getElementById(inputElId).value;
@@ -492,6 +659,57 @@ function clearOvernightOverride(matchId) {
   calculateRoute();
 }
 
+// ---------- Gesamten Trip über alle Tage optimieren ----------
+async function buildOptimizedSchedule(trip) {
+  const byDate = new Map();
+  trip.matches.forEach(m => {
+    if (!byDate.has(m.date)) byDate.set(m.date, []);
+    byDate.get(m.date).push(m);
+  });
+  const dates = [...byDate.keys()].sort();
+  dates.forEach(d => byDate.get(d).sort((a, b) => a.time.localeCompare(b.time)));
+
+  const selected = [];
+  const dropped = [];
+
+  let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
+  let currentTime = new Date(`${dates[0]}T00:00:00`);
+
+  for (let d = 0; d < dates.length; d++) {
+    const dayMatches = byDate.get(dates[d]);
+    const { chain, dropped: dayDropped } = await optimizeDayChain(dayMatches, currentLoc, currentTime);
+    selected.push(...chain);
+    dropped.push(...dayDropped);
+
+    const nextDate = dates[d + 1];
+    if (nextDate) {
+      const lastOfDay = chain.length > 0 ? chain[chain.length - 1] : null;
+      const nextDayMatches = byDate.get(nextDate);
+      // Für die Übernachtungs-Grobplanung wird das chronologisch erste Spiel des
+      // Folgetags als Zielpunkt angenommen - die tatsächliche Tagesauswahl für
+      // den Folgetag wird danach unabhängig per DP bestimmt.
+      const nextGuess = nextDayMatches[0];
+
+      if (lastOfDay && nextGuess) {
+        const override = trip.overnightOverrides[lastOfDay.id];
+        if (override) {
+          currentLoc = { lat: override.lat, lng: override.lng };
+        } else {
+          const plan = await planOvernight(lastOfDay, nextGuess);
+          currentLoc = { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng };
+        }
+        currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
+      } else {
+        // An diesem Tag wurde kein Spiel ausgewählt - Startpunkt bleibt unverändert,
+        // nur die Zeit springt auf den nächsten Morgen.
+        currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
+      }
+    }
+  }
+
+  return { selected, dropped };
+}
+
 // ---------- Hauptberechnung ----------
 async function calculateRoute() {
   const trip = getActiveTrip();
@@ -503,12 +721,17 @@ async function calculateRoute() {
     return;
   }
 
-  timelineEl.innerHTML = "Berechne optimale Route und Fahrzeiten...";
+  timelineEl.innerHTML = "Berechne optimale Route und maximale Spiele-Anzahl pro Tag...";
   droppedEl.innerHTML = "";
   routeLayer.clearLayers();
+  travelCache.clear();
 
-  const sortedMatches = [...trip.matches].sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`));
-  const { selected: selectedMatches, dropped } = await resolveConflicts(sortedMatches);
+  const { selected: selectedMatches, dropped } = await buildOptimizedSchedule(trip);
+
+  // Sidebar: ausgewählte Spiele grün, aussortierte grau markieren
+  const selectedIds = new Set(selectedMatches.map(m => m.id));
+  const droppedReasons = new Map(dropped.map(d => [d.match.id, d.reason]));
+  renderMatchList(selectedIds, droppedReasons);
 
   let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
   let html = "";
@@ -526,6 +749,7 @@ async function calculateRoute() {
     const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
     const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
     const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+    const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
 
     html += `
       <div class="timeline-item">
@@ -536,7 +760,7 @@ async function calculateRoute() {
         <a href="${deeplink}" target="_blank" class="deeplink-btn">🗺️ Teilstrecke in Google Maps öffnen</a>
       </div>
       <div class="timeline-item match-item">
-        <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> (Liga Level ${match.leagueLevel})<br>
+        <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
         📅 ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
       </div>
     `;
@@ -566,7 +790,7 @@ async function calculateRoute() {
           <h4>🌙 Übernachtung erforderlich</h4>
           ${warningHtml}
           <p>Vorschlag: ca. ${plan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.</p>
-          ${override ? '' : `<p><em>Automatischer Vorschlag – bei Reverse-Geocoding kann der Ortsname ungenau sein, bitte vor Ort/online prüfen.</em></p>`}
+          ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
           <div class="form-row">
             <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(overnightLoc.name)}" />
             <button class="btn btn-small" onclick="saveOvernightOverride('${match.id}', '${inputId}')">Übernehmen</button>
@@ -583,14 +807,12 @@ async function calculateRoute() {
         .addTo(routeLayer);
 
       currentLoc = { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
-      // Zweite Teilstrecke (Übernachtung -> nächstes Stadion) wird in der nächsten
-      // Schleifeniteration automatisch von currentLoc aus berechnet und gezeichnet.
     } else {
       currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
     }
   }
 
-  timelineEl.innerHTML = html;
+  timelineEl.innerHTML = html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
 
   if (dropped.length > 0) {
     droppedEl.innerHTML = `
@@ -598,7 +820,7 @@ async function calculateRoute() {
         <h3>Aussortierte Spiele (${dropped.length})</h3>
         ${dropped.map(d => `
           <div class="dropped-match">
-            ${escapeHtml(d.match.home)} vs. ${escapeHtml(d.match.away)} – ${d.match.date} ${d.match.time} Uhr (Liga-Level ${d.match.leagueLevel})
+            ${escapeHtml(d.match.home)} vs. ${escapeHtml(d.match.away)} – ${d.match.date} ${d.match.time} Uhr (${escapeHtml(d.match.leagueName || getLeagueName(d.match.countryCode, d.match.leagueLevel))})
             <span class="reason">Grund: ${escapeHtml(d.reason)}</span>
           </div>
         `).join('')}
