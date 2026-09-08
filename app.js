@@ -102,6 +102,7 @@ function createNewTrip(defaultName = null) {
 
   state.trips.push(newTrip);
   state.activeTripId = newTrip.id;
+  resetMatchForm();
   saveLocalStorage();
   renderTripSelect();
   renderActiveTrip();
@@ -123,6 +124,7 @@ function deleteActiveTrip() {
   if (!confirm(`Trip "${trip.name}" wirklich löschen? Das kann nicht rückgängig gemacht werden.`)) return;
 
   state.trips = state.trips.filter(t => t.id !== trip.id);
+  resetMatchForm();
 
   if (state.trips.length === 0) {
     createNewTrip("Mein erster Groundhopping Trip");
@@ -889,6 +891,9 @@ async function calculateRoute() {
   droppedEl.innerHTML = "";
   routeLayer.clearLayers();
   travelCache.clear();
+
+  const { selected: selectedMatches, dropped } = await buildOptimizedSchedule(trip);
+  const selectedIds = new Set(selectedMatches.map(m => m.id));
 
   lastSelectedMatchIds = selectedIds; // IDs der berechneten Spiele merken
   updateMapMarkers(); // Marker auf der Karte aktualisieren
