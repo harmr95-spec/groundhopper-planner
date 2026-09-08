@@ -13,9 +13,8 @@ let state = {
 };
 
 let map, markersLayer, routeLayer;
-let travelCache = new Map(); // wird pro Berechnung geleert, vermeidet doppelte OSRM-Aufrufe
+let travelCache = new Map();
 
-// Liga-Namen je Land (ISO-3166-1 alpha-2, lowercase, wie von Nominatim geliefert) und Level.
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
   nl: { 1: "Eredivisie", 2: "Eerste Divisie", 3: "Tweede Divisie", 4: "Derde Divisie", 5: "Vierde Divisie", 6: "Vijfde Divisie o. niedriger" },
@@ -29,40 +28,6 @@ const LEAGUE_NAMES = {
   pt: { 1: "Primeira Liga", 2: "Liga Portugal 2", 3: "Campeonato de Portugal", 4: "Divisão de Honra" },
   pl: { 1: "Ekstraklasa", 2: "I liga", 3: "II liga", 4: "III liga" },
   dk: { 1: "Superliga", 2: "1. Division", 3: "2. Division" }
-};
-
-// Zuordnung von Ländercodes & Ländernamen für die Wappen-Validierung
-const COUNTRY_MAPPINGS = {
-  de: ["germany", "deutschland"],
-  fr: ["france", "frankreich"],
-  gb: ["england", "scotland", "wales", "northern ireland", "united kingdom", "uk", "großbritannien"],
-  es: ["spain", "spanien"],
-  it: ["italy", "italien"],
-  nl: ["netherlands", "niederlande", "holland"],
-  be: ["belgium", "belgien"],
-  at: ["austria", "österreich"],
-  ch: ["switzerland", "schweiz"],
-  pt: ["portugal"],
-  pl: ["poland", "polen"],
-  dk: ["denmark", "dänemark"],
-  se: ["sweden", "schweden"],
-  no: ["norway", "norwegen"],
-  fi: ["finland", "finnland"],
-  cz: ["czech republic", "tschechien", "czechia"],
-  tr: ["turkey", "türkei", "türkiye"],
-  gr: ["greece", "griechenland"],
-  hr: ["croatia", "kroatien"],
-  sr: ["serbia", "serbien"],
-  ro: ["romania", "rumänien"],
-  hu: ["hungary", "ungarn"],
-  us: ["united states", "usa", "us", "america"],
-  ca: ["canada", "kanada"],
-  mx: ["mexico", "mexiko"],
-  br: ["brazil", "brasilien"],
-  ar: ["argentina", "argentinien"],
-  jp: ["japan"],
-  kr: ["south korea", "korea"],
-  au: ["australia", "australien"]
 };
 
 function getLeagueName(countryCode, level) {
@@ -84,17 +49,17 @@ document.addEventListener("DOMContentLoaded", () => {
     renderActiveTrip();
   }
 
-  // Automatische Wappen-Suche bei Blur
-  document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest("homeTeam", "homeLogo"));
-  document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest("awayTeam", "awayLogo"));
-  document.getElementById("stadiumAddress").addEventListener("blur", () => {
-    if (!document.getElementById("homeLogo").value.trim()) autoFetchCrest("homeTeam", "homeLogo");
-    if (!document.getElementById("awayLogo").value.trim()) autoFetchCrest("awayTeam", "awayLogo");
-  });
+  // Event Listener für automatische Wappen-Suche bei Blur
+  document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
+  document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
+
+  // Manuelle URL-Änderung in der Vorschau spiegeln
+  document.getElementById("homeLogo").addEventListener("input", () => updateCrestPreview('home'));
+  document.getElementById("awayLogo").addEventListener("input", () => updateCrestPreview('away'));
 });
 
 function initMap() {
-  map = L.map('map').setView([51.1657, 10.4515], 6); // Deutschland-Zentrum
+  map = L.map('map').setView([51.1657, 10.4515], 6);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
   }).addTo(map);
@@ -208,47 +173,14 @@ async function reverseGeocode(lat, lng, zoom = 10) {
     const res = await fetch(url);
     const data = await res.json();
     const addr = data.address || {};
-    const name = addr.city || addr.town || addr.village || addr.municipality || addr.county || data.display_name;
-    return name || null;
+    return addr.city || addr.town || addr.village || addr.municipality || addr.county || data.display_name || null;
   } catch (err) {
     console.error("Reverse-Geocoding Error:", err);
     return null;
   }
 }
 
-// ---------- Iterative Wappen-Suche & Länder-Validierung ----------
-
-// Prüft, ob das vom Verein gemeldete Land mit dem Land der Adresse übereinstimmt
-function isCountryMatch(teamCountry, targetCountryCode, targetCountryName) {
-  if (!targetCountryCode && !targetCountryName) {
-    return true; // Kein Land zur Validierung vorhanden -> akzeptieren
-  }
-
-  const teamC = (teamCountry || "").toLowerCase().trim();
-  if (!teamC) return true; // Falls die API kein Land liefert, ebenfalls zulassen
-
-  const code = (targetCountryCode || "").toLowerCase().trim();
-  const name = (targetCountryName || "").toLowerCase().trim();
-
-  // 1. Abgleich über ISO-Ländercode Mappings
-  if (code && COUNTRY_MAPPINGS[code]) {
-    if (COUNTRY_MAPPINGS[code].some(c => teamC.includes(c) || c.includes(teamC))) {
-      return true;
-    }
-  }
-
-  // 2. Direkter String-Abgleich mit Adresse/Land
-  if (name && (teamC.includes(name) || name.includes(teamC))) {
-    return true;
-  }
-  if (code && (teamC.includes(code) || code.includes(teamC))) {
-    return true;
-  }
-
-  return false;
-}
-
-// Generiert Suchkandidaten: Zuerst voller Name, dann Wörter einzeln (z.B. ["USL Dunkerque", "USL", "Dunkerque"])
+// ---------- Iterative Wappen-Suche (ohne Länder-Sperre) ----------
 function generateSearchCandidates(inputName) {
   const trimmed = inputName.trim();
   if (!trimmed) return [];
@@ -267,8 +199,7 @@ function generateSearchCandidates(inputName) {
   return candidates;
 }
 
-// Sucht iterativ nach Wappen und validiert das Land
-async function fetchCrestForTeam(teamName, targetCountryCode, targetCountryName) {
+async function fetchCrestForTeam(teamName) {
   if (!teamName || !teamName.trim()) return null;
 
   const candidates = generateSearchCandidates(teamName);
@@ -282,14 +213,8 @@ async function fetchCrestForTeam(teamName, targetCountryCode, targetCountryName)
       if (data && data.teams && data.teams.length > 0) {
         for (const team of data.teams) {
           const rawBadge = team.strTeamBadge || team.strBadge;
-          if (!rawBadge) continue;
-
-          // Backslashes bereinigen
-          const cleanBadgeUrl = rawBadge.replace(/\\/g, '');
-
-          // Land validieren
-          if (isCountryMatch(team.strCountry, targetCountryCode, targetCountryName)) {
-            return cleanBadgeUrl;
+          if (rawBadge) {
+            return rawBadge.replace(/\\/g, ''); // Backslashes bereinigen
           }
         }
       }
@@ -300,38 +225,64 @@ async function fetchCrestForTeam(teamName, targetCountryCode, targetCountryName)
   return null;
 }
 
-// Triggered per Blur-Event im Formular
-async function autoFetchCrest(nameInputId, logoInputId) {
-  const logoInput = document.getElementById(logoInputId);
-  const teamName = document.getElementById(nameInputId).value.trim();
-  if (!teamName || logoInput.value.trim() !== "") return; // Manuelle Eingabe nicht überschreiben
+// Triggered per Blur-Event im Formular ('home' oder 'away')
+async function autoFetchCrest(type) {
+  const teamInput = document.getElementById(`${type}Team`);
+  const logoInput = document.getElementById(`${type}Logo`);
+  const teamName = teamInput.value.trim();
 
-  let targetCountryCode = null;
-  let targetCountryName = null;
+  if (!teamName) return;
 
-  // 1. Prüfen, ob eine Stadionadresse angegeben ist
-  const stadiumAddr = document.getElementById("stadiumAddress").value.trim();
-  if (stadiumAddr) {
-    const coords = await geocodeAddress(stadiumAddr);
-    if (coords) {
-      targetCountryCode = coords.countryCode;
-      targetCountryName = coords.display;
-    }
-  }
+  const crestUrl = await fetchCrestForTeam(teamName);
 
-  // 2. Fallback auf Startadresse des Trips
-  if (!targetCountryCode) {
-    const trip = getActiveTrip();
-    if (trip && trip.startAddress) {
-      targetCountryCode = trip.startAddress.countryCode;
-      targetCountryName = trip.startAddress.address;
-    }
-  }
-
-  const crestUrl = await fetchCrestForTeam(teamName, targetCountryCode, targetCountryName);
   if (crestUrl) {
     logoInput.value = crestUrl;
-    logoInput.placeholder = "✓ automatisch gefunden";
+    showCrestPreview(type, crestUrl);
+  } else {
+    // Falls kein Logo gefunden wurde und das Feld leer ist, manuelles Feld anzeigen
+    if (!logoInput.value.trim()) {
+      hideCrestPreview(type);
+    }
+  }
+}
+
+function showCrestPreview(type, url) {
+  const previewContainer = document.getElementById(`${type}CrestPreviewContainer`);
+  const img = document.getElementById(`${type}CrestPreviewImg`);
+  const manualGroup = document.getElementById(`${type}LogoGroup`);
+
+  if (img && previewContainer) {
+    img.src = url;
+    previewContainer.style.display = "flex";
+  }
+  if (manualGroup) {
+    manualGroup.style.display = "none"; // Manuelle Eingabe ausblenden
+  }
+}
+
+function hideCrestPreview(type) {
+  const previewContainer = document.getElementById(`${type}CrestPreviewContainer`);
+  const manualGroup = document.getElementById(`${type}LogoGroup`);
+
+  if (previewContainer) {
+    previewContainer.style.display = "none";
+  }
+  if (manualGroup) {
+    manualGroup.style.display = "block"; // Manuelle Eingabe anzeigen
+  }
+}
+
+function toggleManualLogoInput(type) {
+  hideCrestPreview(type);
+  document.getElementById(`${type}Logo`).focus();
+}
+
+function updateCrestPreview(type) {
+  const url = document.getElementById(`${type}Logo`).value.trim();
+  if (url) {
+    showCrestPreview(type, url);
+  } else {
+    hideCrestPreview(type);
   }
 }
 
@@ -373,12 +324,11 @@ async function addMatch(e) {
   let homeLogo = document.getElementById("homeLogo").value.trim().replace(/\\/g, '');
   let awayLogo = document.getElementById("awayLogo").value.trim().replace(/\\/g, '');
 
-  // Falls Logos noch fehlen, direkt vor dem Speichern nochmals mit dem erkannten Land auflösen
   if (!homeLogo) {
-    homeLogo = await fetchCrestForTeam(homeTeam, coords.countryCode, coords.display) || "";
+    homeLogo = await fetchCrestForTeam(homeTeam) || "";
   }
   if (!awayLogo) {
-    awayLogo = await fetchCrestForTeam(awayTeam, coords.countryCode, coords.display) || "";
+    awayLogo = await fetchCrestForTeam(awayTeam) || "";
   }
 
   const match = {
@@ -402,9 +352,12 @@ async function addMatch(e) {
 
   trip.matches.push(match);
   saveLocalStorage();
+  
+  // Formular zurücksetzen & UI aufräumen
   document.getElementById("matchForm").reset();
-  document.getElementById("homeLogo").placeholder = "Wappen URL Heim (optional)";
-  document.getElementById("awayLogo").placeholder = "Wappen URL Auswärts (optional)";
+  hideCrestPreview('home');
+  hideCrestPreview('away');
+
   renderActiveTrip();
 }
 
@@ -589,7 +542,7 @@ function priorityScore(m) {
   return 11 - m.leagueLevel;
 }
 
-// ---------- Tagesoptimierung (Dynamic Programming) ----------
+// ---------- Dynamic Programming ----------
 async function computeDayDP(segment, startLoc, startTime) {
   const n = segment.length;
   const dp = new Array(n).fill(null);
