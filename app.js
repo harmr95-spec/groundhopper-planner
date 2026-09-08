@@ -361,6 +361,8 @@ async function addMatch(e) {
   document.getElementById("matchForm").reset();
   hideCrestPreview('home');
   hideCrestPreview('away');
+  document.getElementById("homeLogoGroup").style.display = "none";
+  document.getElementById("awayLogoGroup").style.display = "none";
 
   renderActiveTrip();
 }
