@@ -511,7 +511,7 @@ async function bestChainUnconstrained(segment, startLoc, startTime) {
   return { chain, usedIndices: new Set(chain.map(m => m.id)) };
 }
 
-// Kette, die zwingend am letzten Element des Segments endet (Muss-Spiel als Anker)
+// Kette, die zwingend am letzten Element des Segments endet (Highlightspiel als Anker)
 async function bestChainEndingAtLast(segment, startLoc, startTime) {
   if (segment.length === 0) return { chain: [], usedIndices: new Set(), reachable: true };
   const dp = await computeDayDP(segment, startLoc, startTime);
@@ -521,7 +521,7 @@ async function bestChainEndingAtLast(segment, startLoc, startTime) {
   return { chain, usedIndices: new Set(chain.map(m => m.id)), reachable: true };
 }
 
-// Optimiert einen kompletten Tag: zerlegt an Muss-Spielen in Segmente,
+// Optimiert einen kompletten Tag: zerlegt an Highlightspielen in Segmente,
 // maximiert je Segment die Spiele-Anzahl und hängt alles aneinander.
 async function optimizeDayChain(dayMatches, startLoc, startTime) {
   const chain = [];
@@ -539,9 +539,9 @@ async function optimizeDayChain(dayMatches, startLoc, startTime) {
     const { chain: segChain, usedIndices, reachable } = await bestChainEndingAtLast(segment, currentLoc, currentTime);
 
     if (!reachable) {
-      dropped.push({ match: dayMatches[mustIdx], reason: "Muss-Spiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen." });
+      dropped.push({ match: dayMatches[mustIdx], reason: "Highlightspiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen." });
       // Rest des Segments ohne Zwang neu optimieren, damit nicht alles verloren geht
-      const fallbackSegment = dayMatches.slice(cursor, mustIdx); // ohne das nicht erreichbare Muss-Spiel
+      const fallbackSegment = dayMatches.slice(cursor, mustIdx); // ohne das nicht erreichbare Highlightspiel
       const { chain: fbChain, usedIndices: fbUsed } = await bestChainUnconstrained(fallbackSegment, currentLoc, currentTime);
       chain.push(...fbChain);
       fallbackSegment.forEach(m => {
@@ -555,7 +555,7 @@ async function optimizeDayChain(dayMatches, startLoc, startTime) {
     } else {
       chain.push(...segChain);
       segment.forEach(m => {
-        if (!usedIndices.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar (Muss-Spiel hat Vorrang)." });
+        if (!usedIndices.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar (Highlightspiel hat Vorrang)." });
       });
       const last = segChain[segChain.length - 1];
       currentLoc = { lat: last.lat, lng: last.lng };
@@ -757,11 +757,11 @@ async function calculateRoute() {
         Abfahrt: ${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
         Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
         <br>
-        <a href="${deeplink}" target="_blank" class="deeplink-btn">🗺️ Teilstrecke in Google Maps öffnen</a>
+        <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
       </div>
       <div class="timeline-item match-item">
         <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
-        📅 ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
+        ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
       </div>
     `;
 
