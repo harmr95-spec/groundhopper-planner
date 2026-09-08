@@ -226,6 +226,7 @@ async function fetchCrestForTeam(teamName) {
 }
 
 // Triggered per Blur-Event im Formular ('home' oder 'away')
+// Triggered per Blur-Event im Formular ('home' oder 'away')
 async function autoFetchCrest(type) {
   const teamInput = document.getElementById(`${type}Team`);
   const logoInput = document.getElementById(`${type}Logo`);
@@ -233,31 +234,53 @@ async function autoFetchCrest(type) {
 
   if (!teamName) return;
 
+  // Ladeanzeige im Vorschau-Container
+  showCrestLoading(type);
+
   const crestUrl = await fetchCrestForTeam(teamName);
 
   if (crestUrl) {
     logoInput.value = crestUrl;
     showCrestPreview(type, crestUrl);
   } else {
-    // Falls kein Logo gefunden wurde und das Feld leer ist, manuelles Feld anzeigen
-    if (!logoInput.value.trim()) {
-      hideCrestPreview(type);
-    }
+    hideCrestPreview(type);
   }
+}
+
+function showCrestLoading(type) {
+  const previewContainer = document.getElementById(`${type}CrestPreviewContainer`);
+  const manualGroup = document.getElementById(`${type}LogoGroup`);
+  if (previewContainer) {
+    previewContainer.style.display = "flex";
+    previewContainer.innerHTML = `<span style="font-size: 0.8rem; color: #666;">Suche Wappen...</span>`;
+  }
+  if (manualGroup) manualGroup.style.display = "none";
 }
 
 function showCrestPreview(type, url) {
   const previewContainer = document.getElementById(`${type}CrestPreviewContainer`);
-  const img = document.getElementById(`${type}CrestPreviewImg`);
   const manualGroup = document.getElementById(`${type}LogoGroup`);
 
-  if (img && previewContainer) {
-    img.src = url;
-    previewContainer.style.display = "flex";
-  }
+  if (!previewContainer) return;
+
+  previewContainer.style.display = "flex";
+  previewContainer.innerHTML = `
+    <img src="${url}" 
+         alt="Wappen Preview" 
+         style="height: 45px; width: 45px; object-fit: contain; border: 1px solid #ccc; padding: 2px; borderRadius: 4px; background: #fff;"
+         onerror="handleCrestError('${type}')" />
+    <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('${type}')" title="URL manuell bearbeiten">✏️</button>
+  `;
+
   if (manualGroup) {
-    manualGroup.style.display = "none"; // Manuelle Eingabe ausblenden
+    manualGroup.style.display = "none";
   }
+}
+
+function handleCrestError(type) {
+  alert("Das gefundene Wappen konnte nicht geladen werden. Bitte gib die URL manuell ein.");
+  document.getElementById(`${type}Logo`).value = "";
+  hideCrestPreview(type);
 }
 
 function hideCrestPreview(type) {
@@ -266,9 +289,10 @@ function hideCrestPreview(type) {
 
   if (previewContainer) {
     previewContainer.style.display = "none";
+    previewContainer.innerHTML = "";
   }
   if (manualGroup) {
-    manualGroup.style.display = "block"; // Manuelle Eingabe anzeigen
+    manualGroup.style.display = "block";
   }
 }
 
@@ -285,7 +309,6 @@ function updateCrestPreview(type) {
     hideCrestPreview(type);
   }
 }
-
 async function setStartAddress() {
   const address = document.getElementById("startAddress").value;
   if (!address) return;
