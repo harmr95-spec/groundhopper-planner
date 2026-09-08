@@ -348,6 +348,7 @@ async function addMatch(e) {
     date: document.getElementById("matchDate").value,
     time: document.getElementById("matchTime").value,
     stadium: stadiumAddr,
+    resolvedAddress: coords.display,
     lat: coords.lat,
     lng: coords.lng,
     mustAttend: document.getElementById("mustAttend").checked,
@@ -495,9 +496,11 @@ function renderActiveTrip() {
 }
 
 function matchPopupHtml(m) {
+  const fullAddress = m.resolvedAddress ? `<br>🗺️ <small>${escapeHtml(m.resolvedAddress)}</small>` : '';
+  
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-    📍 ${escapeHtml(m.stadium)}<br>
+    📍 <b>${escapeHtml(m.stadium)}</b>${fullAddress}<br>
     📅 ${m.date} um ${m.time} Uhr`;
 }
 
