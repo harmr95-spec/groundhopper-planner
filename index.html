@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Groundhopping Trip Planner</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="app-header">
+    <h1>⚽ Groundhopping Trip Planner</h1>
+    <div class="header-controls">
+      <select id="tripSelect" onchange="switchTrip()"></select>
+      <button onclick="createNewTrip()" class="btn btn-secondary" title="Neuen Trip anlegen">+ Neu</button>
+      <button onclick="renameActiveTrip()" class="btn btn-icon" title="Trip umbenennen">✏️</button>
+      <button onclick="deleteActiveTrip()" class="btn btn-icon" title="Trip löschen">🗑️</button>
+      <button onclick="toggleSettingsModal()" class="btn btn-icon">⚙️ Einstellungen</button>
+    </div>
+  </header>
+
+  <main class="main-layout">
+    <aside class="sidebar">
+
+      <!-- Startadresse -->
+      <section class="card">
+        <h3>1. Startpunkt</h3>
+        <div class="form-group">
+          <input type="text" id="startAddress" placeholder="z. B. Musterstraße 1, Köln" />
+          <button onclick="setStartAddress()" class="btn btn-small">Speichern</button>
+        </div>
+        <p id="startAddressStatus" class="status-text"></p>
+      </section>
+
+      <!-- Spiel anlegen -->
+      <section class="card">
+        <h3>2. Spiel hinzufügen</h3>
+        <form id="matchForm" onsubmit="addMatch(event)">
+          <div class="form-row">
+            <input type="text" id="homeTeam" placeholder="Heimteam *" required />
+            <input type="url" id="homeLogo" placeholder="Wappen URL Heim (optional)" />
+          </div>
+          <div class="form-row">
+            <input type="text" id="awayTeam" placeholder="Auswärtsteam *" required />
+            <input type="url" id="awayLogo" placeholder="Wappen URL Auswärts (optional)" />
+          </div>
+          <div class="form-row">
+            <select id="leagueLevel" required>
+              <option value="">Liga Level wählen *</option>
+              <option value="1">Level 1 (z.B. Bundesliga)</option>
+              <option value="2">Level 2 (z.B. 2. Bundesliga)</option>
+              <option value="3">Level 3 (z.B. 3. Liga)</option>
+              <option value="4">Level 4 (z.B. Regionalliga)</option>
+              <option value="5">Level 5 (z.B. Oberliga)</option>
+              <option value="6">Level 6 oder niedriger</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <input type="date" id="matchDate" required />
+            <input type="time" id="matchTime" required />
+          </div>
+          <div class="form-group">
+            <input type="text" id="stadiumAddress" placeholder="Stadion / Adresse *" required />
+          </div>
+          <details class="advanced-settings">
+            <summary>Eigene Pufferzeiten für dieses Spiel (optional)</summary>
+            <div class="form-row">
+              <input type="number" id="customArrivalBuffer" placeholder="Anreise (Min.)" min="0" />
+              <input type="number" id="customDepartureBuffer" placeholder="Abreise (Min.)" min="0" />
+            </div>
+          </details>
+          <button type="submit" class="btn btn-primary">Spiel hinzufügen</button>
+        </form>
+      </section>
+
+      <!-- Eingetragene Spiele -->
+      <section class="card">
+        <h3>Erfasste Spiele (<span id="matchCount">0</span>)</h3>
+        <ul id="matchList" class="match-list"></ul>
+      </section>
+
+    </aside>
+
+    <section class="content-area">
+      <!-- Karte -->
+      <div id="map" class="map-container"></div>
+
+      <!-- Berechnete Route & Timeline -->
+      <div class="card timeline-card">
+        <div class="timeline-header">
+          <h2>Optimierter Ablaufplan</h2>
+          <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+        </div>
+        <div id="timeline" class="timeline-container">
+          <p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>
+        </div>
+        <div id="droppedSection"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Einstellungen Modal -->
+  <div id="settingsModal" class="modal">
+    <div class="modal-content">
+      <h2>Globale Einstellungen</h2>
+      <div class="form-group">
+        <label for="settingArrivalBuffer">Anreise-Puffer vor Anstoß (Minuten):</label>
+        <input type="number" id="settingArrivalBuffer" value="30" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingDepartureBuffer">Abreise-Puffer nach Abpfiff (Minuten):</label>
+        <input type="number" id="settingDepartureBuffer" value="30" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingHalfTime">Halbzeitpause (Minuten):</label>
+        <input type="number" id="settingHalfTime" value="15" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingStoppageTime">Nachspielzeit Gesamt (Minuten):</label>
+        <input type="number" id="settingStoppageTime" value="10" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingMaxNightDrive">Späteste normale Abfahrtszeit abends (HH:MM):</label>
+        <input type="time" id="settingMaxNightDrive" value="22:00" />
+      </div>
+      <div class="form-group">
+        <label for="settingNextDayStart">Frühester Start am nächsten Morgen (HH:MM):</label>
+        <input type="time" id="settingNextDayStart" value="08:00" />
+      </div>
+      <div class="form-group">
+        <label for="settingMaxExtraNightDrive">Max. zusätzliche Nachtfahrt bei Zeitnot (Minuten):</label>
+        <input type="number" id="settingMaxExtraNightDrive" value="120" min="0" step="15" />
+      </div>
+      <div class="modal-actions">
+        <button onclick="saveSettings()" class="btn btn-primary">Speichern</button>
+        <button onclick="toggleSettingsModal()" class="btn btn-secondary">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
