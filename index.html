@@ -1,42 +1,91 @@
 <form id="matchForm" onsubmit="addMatch(event)">
-  <!-- Heimteam Bereich -->
+  <!-- Heimteam -->
   <div class="form-group">
     <label for="homeTeam">Heimteam</label>
     <div style="display: flex; align-items: center; gap: 0.5rem;">
-      <input type="text" id="homeTeam" placeholder="z. B. Hamburg" required style="flex: 1;" />
+      <input type="text" id="homeTeam" placeholder="z. B. FC St. Pauli" required style="flex: 1;" />
       
-      <!-- Vorschau Wappen (standardmäßig ausgeblendet) -->
+      <!-- Wappen Vorschau & Ändern Button -->
       <div id="homeCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-        <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" style="height: 32px; width: 32px; object-fit: contain;" />
+        <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
         <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('home')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
       </div>
     </div>
 
-    <!-- Manuelles URL-Feld (wird bei automatischem Wappen ausgeblendet) -->
+    <!-- Manuelle URL Eingabe -->
     <div id="homeLogoGroup" style="margin-top: 0.25rem;">
       <input type="url" id="homeLogo" placeholder="Wappen-URL Heim (optional)" />
     </div>
   </div>
 
-  <!-- Auswärtsteam Bereich -->
+  <!-- Auswärtsteam -->
   <div class="form-group">
     <label for="awayTeam">Auswärtsteam</label>
     <div style="display: flex; align-items: center; gap: 0.5rem;">
-      <input type="text" id="awayTeam" placeholder="z. B. St. Pauli" required style="flex: 1;" />
+      <input type="text" id="awayTeam" placeholder="z. B. Hamburger SV" required style="flex: 1;" />
       
-      <!-- Vorschau Wappen (standardmäßig ausgeblendet) -->
+      <!-- Wappen Vorschau & Ändern Button -->
       <div id="awayCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-        <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" style="height: 32px; width: 32px; object-fit: contain;" />
+        <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
         <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('away')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
       </div>
     </div>
 
-    <!-- Manuelles URL-Feld (wird bei automatischem Wappen ausgeblendet) -->
+    <!-- Manuelle URL Eingabe -->
     <div id="awayLogoGroup" style="margin-top: 0.25rem;">
       <input type="url" id="awayLogo" placeholder="Wappen-URL Auswärts (optional)" />
     </div>
   </div>
 
-  <!-- Restliche Formularfelder (Liga-Ebene, Datum, Uhrzeit, Stadion etc.) -->
-  ...
+  <!-- Liga-Ebene -->
+  <div class="form-group">
+    <label for="leagueLevel">Liga-Ebene / Spielklasse</label>
+    <select id="leagueLevel" required>
+      <option value="1">1. Liga / Höchste Spielklasse</option>
+      <option value="2">2. Liga</option>
+      <option value="3">3. Liga</option>
+      <option value="4">4. Liga (Regionalliga etc.)</option>
+      <option value="5">5. Liga (Oberliga etc.)</option>
+      <option value="6">6. Liga oder niedriger</option>
+    </select>
+  </div>
+
+  <!-- Datum & Uhrzeit -->
+  <div class="form-row" style="display: flex; gap: 0.5rem;">
+    <div class="form-group" style="flex: 1;">
+      <label for="matchDate">Datum</label>
+      <input type="date" id="matchDate" required />
+    </div>
+    <div class="form-group" style="flex: 1;">
+      <label for="matchTime">Anstoßzeit</label>
+      <input type="time" id="matchTime" required />
+    </div>
+  </div>
+
+  <!-- Stadion / Adresse -->
+  <div class="form-group">
+    <label for="stadiumAddress">Stadion / Adresse</label>
+    <input type="text" id="stadiumAddress" placeholder="z. B. Millerntor-Stadion, Hamburg" required />
+  </div>
+
+  <!-- Individuelle Pufferzeiten (Optional) -->
+  <div class="form-row" style="display: flex; gap: 0.5rem;">
+    <div class="form-group" style="flex: 1;">
+      <label for="customArrivalBuffer">Ankunftspuffer (Min.)</label>
+      <input type="number" id="customArrivalBuffer" placeholder="Standard" min="0" />
+    </div>
+    <div class="form-group" style="flex: 1;">
+      <label for="customDepartureBuffer">Abreisepuffer (Min.)</label>
+      <input type="number" id="customDepartureBuffer" placeholder="Standard" min="0" />
+    </div>
+  </div>
+
+  <!-- Highlight-Match Checkbox -->
+  <div class="form-group checkbox-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+    <input type="checkbox" id="mustAttend" />
+    <label for="mustAttend" style="margin: 0; cursor: pointer;">⭐ Highlight-Spiel (Must-Attend)</label>
+  </div>
+
+  <!-- Submit Button -->
+  <button type="submit" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">Spiel hinzufügen</button>
 </form>
