@@ -1046,3 +1046,86 @@ function saveSettings() {
   saveLocalStorage();
   toggleSettingsModal();
 }
+
+// ---------- Export & Import ----------
+
+// 1. Aktiven Trip als JSON-Datei herunterladen
+function exportActiveTrip() {
+  const trip = getActiveTrip();
+  if (!trip) {
+    alert("Kein aktiver Trip zum Exportieren vorhanden.");
+    return;
+  }
+
+  const exportData = {
+    type: "groundhopping_trip",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: state.settings,
+    trip: trip
+  };
+
+  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+  const downloadAnchor = document.createElement('a');
+  const safeFileName = trip.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+  downloadAnchor.setAttribute("href", dataStr);
+  downloadAnchor.setAttribute("download", `${safeFileName}_trip.json`);
+  document.body.appendChild(downloadAnchor);
+  downloadAnchor.click();
+  downloadAnchor.remove();
+}
+
+// 2. Datei-Auswahldialog öffnen
+function triggerImportTrip() {
+  const fileInput = document.getElementById("importTripInput");
+  if (fileInput) fileInput.click();
+}
+
+// 3. JSON-Datei einlesen und Trip hinzufügen
+function importTrip(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const importedData = JSON.parse(e.target.result);
+      let importedTrip = importedData.trip || importedData;
+
+      if (!importedTrip || !importedTrip.name || !Array.isArray(importedTrip.matches)) {
+        alert("Ungültiges Dateiformat. Bitte wähle eine gültige Groundhopping JSON-Datei.");
+        return;
+      }
+
+      // Neue eindeutige ID vergeben (verhindert Überschreiben vorhandener Trips)
+      importedTrip.id = "trip_" + Date.now();
+      importedTrip.name = importedTrip.name + " (Importiert)";
+
+      // Trip hinzufügen und aktivieren
+      state.trips.push(importedTrip);
+      state.activeTripId = importedTrip.id;
+
+      // Optional Einstellungen mit übernehmen
+      if (importedData.settings) {
+        if (confirm("Möchtest du auch die Trip-Einstellungen (Pufferzeiten, Nachtfahrtsgrenzen) übernehmen?")) {
+          state.settings = { ...state.settings, ...importedData.settings };
+        }
+      }
+
+      saveLocalStorage();
+      renderTripSelect();
+      resetMatchForm();
+      renderActiveTrip();
+
+      alert(`Trip "${importedTrip.name}" wurde erfolgreich importiert!`);
+    } catch (err) {
+      console.error("Import-Fehler:", err);
+      alert("Fehler beim Importieren. Die Datei ist beschädigt oder kein gültiges JSON.");
+    } finally {
+      event.target.value = ""; // Input zurücksetzen
+    }
+  };
+
+  reader.readAsText(file);
+}
