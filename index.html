@@ -132,6 +132,14 @@
     </aside>
 
     <section class="content-area">
+      
+<div class="map-controls" style="margin-bottom: 0.5rem;">
+  <label style="cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+    <input type="checkbox" id="showOnlySelectedToggle" onchange="updateMapMarkers()" />
+    <strong>Nur berechnete/eingeplante Spiele auf der Karte anzeigen</strong>
+  </label>
+</div>
+      
       <!-- Karte -->
       <div id="map" class="map-container"></div>
 
