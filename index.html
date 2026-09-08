@@ -1,91 +1,188 @@
-<form id="matchForm" onsubmit="addMatch(event)">
-  <!-- Heimteam -->
-  <div class="form-group">
-    <label for="homeTeam">Heimteam</label>
-    <div style="display: flex; align-items: center; gap: 0.5rem;">
-      <input type="text" id="homeTeam" placeholder="z. B. FC St. Pauli" required style="flex: 1;" />
-      
-      <!-- Wappen Vorschau & Ändern Button -->
-      <div id="homeCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-        <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
-        <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('home')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Groundhopping Trip Planner</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="app-header">
+    <h1>⚽ Groundhopping Trip Planner</h1>
+    <div class="header-controls">
+      <select id="tripSelect" onchange="switchTrip()"></select>
+      <button onclick="createNewTrip()" class="btn btn-secondary" title="Neuen Trip anlegen">+ Neu</button>
+      <button onclick="renameActiveTrip()" class="btn btn-icon" title="Trip umbenennen">✏️</button>
+      <button onclick="deleteActiveTrip()" class="btn btn-icon" title="Trip löschen">🗑️</button>
+      <button onclick="toggleSettingsModal()" class="btn btn-icon">⚙️ Einstellungen</button>
+    </div>
+  </header>
+
+  <main class="main-layout">
+    <aside class="sidebar">
+
+      <!-- Startadresse -->
+      <section class="card">
+        <h3>1. Startpunkt</h3>
+        <div class="form-group">
+          <input type="text" id="startAddress" placeholder="z. B. Musterstraße 1, Köln" />
+          <button onclick="setStartAddress()" class="btn btn-small">Speichern</button>
+        </div>
+        <p id="startAddressStatus" class="status-text"></p>
+      </section>
+
+      <!-- Spiel anlegen -->
+      <section class="card">
+        <h3>2. Spiel hinzufügen</h3>
+        <form id="matchForm" onsubmit="addMatch(event)">
+          
+          <!-- Heimteam -->
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label for="homeTeam">Heimteam *</label>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+              <input type="text" id="homeTeam" placeholder="z. B. FC St. Pauli" required style="flex: 1;" />
+              <div id="homeCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
+                <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
+                <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('home')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
+              </div>
+            </div>
+            <div id="homeLogoGroup" style="margin-top: 0.25rem;">
+              <input type="url" id="homeLogo" placeholder="Wappen-URL Heim (optional)" />
+            </div>
+          </div>
+
+          <!-- Auswärtsteam -->
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label for="awayTeam">Auswärtsteam *</label>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+              <input type="text" id="awayTeam" placeholder="z. B. Hamburger SV" required style="flex: 1;" />
+              <div id="awayCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
+                <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
+                <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('away')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
+              </div>
+            </div>
+            <div id="awayLogoGroup" style="margin-top: 0.25rem;">
+              <input type="url" id="awayLogo" placeholder="Wappen-URL Auswärts (optional)" />
+            </div>
+          </div>
+
+          <!-- Liga Level -->
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label for="leagueLevel">Liga Level *</label>
+            <select id="leagueLevel" required style="width: 100%; margin-top: 0.25rem;">
+              <option value="">Liga Level wählen *</option>
+              <option value="1">Level 1 (z.B. Bundesliga)</option>
+              <option value="2">Level 2 (z.B. 2. Bundesliga)</option>
+              <option value="3">Level 3 (z.B. 3. Liga)</option>
+              <option value="4">Level 4 (z.B. Regionalliga)</option>
+              <option value="5">Level 5 (z.B. Oberliga)</option>
+              <option value="6">Level 6 oder niedriger</option>
+            </select>
+          </div>
+
+          <!-- Datum & Uhrzeit -->
+          <div class="form-row" style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+            <div style="flex: 1;">
+              <label for="matchDate">Datum *</label>
+              <input type="date" id="matchDate" required style="width: 100%; margin-top: 0.25rem;" />
+            </div>
+            <div style="flex: 1;">
+              <label for="matchTime">Anstoßzeit *</label>
+              <input type="time" id="matchTime" required style="width: 100%; margin-top: 0.25rem;" />
+            </div>
+          </div>
+
+          <!-- Stadion / Adresse -->
+          <div class="form-group" style="margin-bottom: 0.75rem;">
+            <label for="stadiumAddress">Stadion / Adresse *</label>
+            <input type="text" id="stadiumAddress" placeholder="Stadion / Adresse *" required style="width: 100%; margin-top: 0.25rem;" />
+          </div>
+
+          <!-- Weitere Optionen -->
+          <details class="advanced-settings" style="margin-bottom: 0.75rem;">
+            <summary>Weitere Optionen (optional)</summary>
+            <div class="form-row" style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+              <input type="number" id="customArrivalBuffer" placeholder="Anreise (Min.)" min="0" style="flex: 1;" />
+              <input type="number" id="customDepartureBuffer" placeholder="Abreise (Min.)" min="0" style="flex: 1;" />
+            </div>
+            <label class="checkbox-row" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+              <input type="checkbox" id="mustAttend" />
+              ⭐ Highlightspiel
+            </label>
+          </details>
+
+          <button type="submit" class="btn btn-primary" style="width: 100%;">Spiel hinzufügen</button>
+        </form>
+      </section>
+
+      <!-- Eingetragene Spiele -->
+      <section class="card">
+        <h3>Erfasste Spiele (<span id="matchCount">0</span>)</h3>
+        <ul id="matchList" class="match-list"></ul>
+      </section>
+
+    </aside>
+
+    <section class="content-area">
+      <!-- Karte -->
+      <div id="map" class="map-container"></div>
+
+      <!-- Berechnete Route & Timeline -->
+      <div class="card timeline-card">
+        <div class="timeline-header">
+          <h2>Optimierter Ablaufplan</h2>
+          <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+        </div>
+        <div id="timeline" class="timeline-container">
+          <p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>
+        </div>
+        <div id="droppedSection"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Einstellungen Modal -->
+  <div id="settingsModal" class="modal">
+    <div class="modal-content">
+      <h2>Globale Einstellungen</h2>
+      <div class="form-group">
+        <label for="settingArrivalBuffer">Anreise-Puffer vor Anstoß (Minuten):</label>
+        <input type="number" id="settingArrivalBuffer" value="30" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingDepartureBuffer">Abreise-Puffer nach Abpfiff (Minuten):</label>
+        <input type="number" id="settingDepartureBuffer" value="30" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingHalfTime">Halbzeitpause (Minuten):</label>
+        <input type="number" id="settingHalfTime" value="15" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingStoppageTime">Nachspielzeit Gesamt (Minuten):</label>
+        <input type="number" id="settingStoppageTime" value="10" min="0" />
+      </div>
+      <div class="form-group">
+        <label for="settingMaxNightDrive">Späteste normale Abfahrtszeit abends (HH:MM):</label>
+        <input type="time" id="settingMaxNightDrive" value="22:00" />
+      </div>
+      <div class="form-group">
+        <label for="settingNextDayStart">Frühester Start am nächsten Morgen (HH:MM):</label>
+        <input type="time" id="settingNextDayStart" value="08:00" />
+      </div>
+      <div class="form-group">
+        <label for="settingMaxExtraNightDrive">Max. zusätzliche Nachtfahrt bei Zeitnot (Minuten):</label>
+        <input type="number" id="settingMaxExtraNightDrive" value="120" min="0" step="15" />
+      </div>
+      <div class="modal-actions">
+        <button onclick="saveSettings()" class="btn btn-primary">Speichern</button>
+        <button onclick="toggleSettingsModal()" class="btn btn-secondary">Abbrechen</button>
       </div>
     </div>
-
-    <!-- Manuelle URL Eingabe -->
-    <div id="homeLogoGroup" style="margin-top: 0.25rem;">
-      <input type="url" id="homeLogo" placeholder="Wappen-URL Heim (optional)" />
-    </div>
   </div>
 
-  <!-- Auswärtsteam -->
-  <div class="form-group">
-    <label for="awayTeam">Auswärtsteam</label>
-    <div style="display: flex; align-items: center; gap: 0.5rem;">
-      <input type="text" id="awayTeam" placeholder="z. B. Hamburger SV" required style="flex: 1;" />
-      
-      <!-- Wappen Vorschau & Ändern Button -->
-      <div id="awayCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-        <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: #fff;" />
-        <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('away')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
-      </div>
-    </div>
-
-    <!-- Manuelle URL Eingabe -->
-    <div id="awayLogoGroup" style="margin-top: 0.25rem;">
-      <input type="url" id="awayLogo" placeholder="Wappen-URL Auswärts (optional)" />
-    </div>
-  </div>
-
-  <!-- Liga-Ebene -->
-  <div class="form-group">
-    <label for="leagueLevel">Liga-Ebene / Spielklasse</label>
-    <select id="leagueLevel" required>
-      <option value="1">1. Liga / Höchste Spielklasse</option>
-      <option value="2">2. Liga</option>
-      <option value="3">3. Liga</option>
-      <option value="4">4. Liga (Regionalliga etc.)</option>
-      <option value="5">5. Liga (Oberliga etc.)</option>
-      <option value="6">6. Liga oder niedriger</option>
-    </select>
-  </div>
-
-  <!-- Datum & Uhrzeit -->
-  <div class="form-row" style="display: flex; gap: 0.5rem;">
-    <div class="form-group" style="flex: 1;">
-      <label for="matchDate">Datum</label>
-      <input type="date" id="matchDate" required />
-    </div>
-    <div class="form-group" style="flex: 1;">
-      <label for="matchTime">Anstoßzeit</label>
-      <input type="time" id="matchTime" required />
-    </div>
-  </div>
-
-  <!-- Stadion / Adresse -->
-  <div class="form-group">
-    <label for="stadiumAddress">Stadion / Adresse</label>
-    <input type="text" id="stadiumAddress" placeholder="z. B. Millerntor-Stadion, Hamburg" required />
-  </div>
-
-  <!-- Individuelle Pufferzeiten (Optional) -->
-  <div class="form-row" style="display: flex; gap: 0.5rem;">
-    <div class="form-group" style="flex: 1;">
-      <label for="customArrivalBuffer">Ankunftspuffer (Min.)</label>
-      <input type="number" id="customArrivalBuffer" placeholder="Standard" min="0" />
-    </div>
-    <div class="form-group" style="flex: 1;">
-      <label for="customDepartureBuffer">Abreisepuffer (Min.)</label>
-      <input type="number" id="customDepartureBuffer" placeholder="Standard" min="0" />
-    </div>
-  </div>
-
-  <!-- Highlight-Match Checkbox -->
-  <div class="form-group checkbox-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
-    <input type="checkbox" id="mustAttend" />
-    <label for="mustAttend" style="margin: 0; cursor: pointer;">⭐ Highlight-Spiel (Must-Attend)</label>
-  </div>
-
-  <!-- Submit Button -->
-  <button type="submit" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">Spiel hinzufügen</button>
-</form>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
