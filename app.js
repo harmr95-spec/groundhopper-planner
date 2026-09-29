@@ -305,7 +305,7 @@ async function lookupVenueById(idVenue) {
 async function searchVenueByName(venueName) {
   if (!venueName || !venueName.trim()) return null;
   try {
-    const url = `https://www.thesportsdb.com/api/v1/json/3/searchvenues.php?v=${encodeURIComponent(venueName.trim())}`;
+    const url = `https://www.thesportsdb.com/api/v1/json/123/searchvenues.php?v=${encodeURIComponent(venueName.trim())}`;
     const res = await fetch(url);
     const data = await res.json();
     if (!data || !Array.isArray(data.venues) || !data.venues.length) return null;
