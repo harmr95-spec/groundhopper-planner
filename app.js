@@ -15,6 +15,7 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
+let autoStadiumValue = "";
 let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
 
 // ---------- Trip-Alternativen ----------
@@ -62,6 +63,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Event Listener für automatische Wappen-Suche bei Blur
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
+
+  document.getElementById("stadiumAddress").addEventListener("input", (event) => {
+    if (event.target.value.trim() !== autoStadiumValue) {
+      autoStadiumValue = "";
+    }
+  });
 
   // Manuelle URL-Änderung in der Vorschau spiegeln
   document.getElementById("homeLogo").addEventListener("input", () => updateCrestPreview('home'));
@@ -227,10 +234,11 @@ function generateSearchCandidates(inputName) {
   return candidates;
 }
 
-async function fetchCrestForTeam(teamName) {
+async function fetchSoccerTeam(teamName) {
   if (!teamName || !teamName.trim()) return null;
 
   const candidates = generateSearchCandidates(teamName);
+  const wantedName = teamName.trim().toLowerCase();
 
   for (const candidate of candidates) {
     try {
@@ -238,25 +246,33 @@ async function fetchCrestForTeam(teamName) {
       const res = await fetch(url);
       const data = await res.json();
 
-      if (data && Array.isArray(data.teams) && data.teams.length > 0) {
-        // Nur Fußballteams berücksichtigen. Treffer aus anderen Sportarten
-        // werden behandelt, als hätte TheSportsDB nichts gefunden.
-        const soccerTeams = data.teams.filter(team =>
-          String(team.strSport || "").trim().toLowerCase() === "soccer"
-        );
+      if (!data || !Array.isArray(data.teams)) continue;
 
-        for (const team of soccerTeams) {
-          const rawBadge = team.strTeamBadge || team.strBadge;
-          if (rawBadge) {
-            return rawBadge.replace(/\\/g, '');
-          }
-        }
-      }
+      const soccerTeams = data.teams.filter(team =>
+        String(team.strSport || "").trim().toLowerCase() === "soccer"
+      );
+
+      if (soccerTeams.length === 0) continue;
+
+      const exactTeam = soccerTeams.find(team => {
+        const names = [team.strTeam, ...(team.strTeamAlternate || "").split(",")]
+          .map(name => String(name || "").trim().toLowerCase());
+        return names.includes(wantedName);
+      });
+
+      return exactTeam || soccerTeams[0];
     } catch (err) {
-      console.error(`Wappen-Suche Fehler für "${candidate}":`, err);
+      console.error(`Fußballteam-Suche Fehler für "${candidate}":`, err);
     }
   }
+
   return null;
+}
+
+async function fetchCrestForTeam(teamName) {
+  const team = await fetchSoccerTeam(teamName);
+  const rawBadge = team && (team.strTeamBadge || team.strBadge);
+  return rawBadge ? rawBadge.replace(/\\/g, "") : null;
 }
 
 async function autoFetchCrest(type) {
@@ -271,14 +287,29 @@ async function autoFetchCrest(type) {
     return;
   }
 
-  const crestUrl = await fetchCrestForTeam(teamName);
+  // Eine gemeinsame, bereits auf Soccer gefilterte Response für Badge und Stadion.
+  const team = await fetchSoccerTeam(teamName);
+  const rawBadge = team && (team.strTeamBadge || team.strBadge);
+  const crestUrl = rawBadge ? rawBadge.replace(/\\/g, "") : null;
 
   if (crestUrl) {
     logoInput.value = crestUrl;
     showCrestPreview(type, crestUrl);
   } else {
+    logoInput.value = "";
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "block";
+  }
+
+  if (type === "home" && team && team.strStadium) {
+    const stadiumInput = document.getElementById("stadiumAddress");
+    const currentValue = stadiumInput.value.trim();
+
+    // Nur leere oder zuvor automatisch gesetzte Werte überschreiben.
+    if (currentValue === "" || currentValue === autoStadiumValue) {
+      stadiumInput.value = team.strStadium.trim();
+      autoStadiumValue = stadiumInput.value.trim();
+    }
   }
 }
 
@@ -448,6 +479,7 @@ function editMatch(matchId) {
 function resetMatchForm() {
   editingMatchId = null;
   document.getElementById("matchForm").reset();
+  autoStadiumValue = "";
   
   hideCrestPreview('home');
   hideCrestPreview('away');
