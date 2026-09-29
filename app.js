@@ -15,6 +15,8 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
+let stadiumAddressManuallyEdited = false;
+let homeTeamSportsData = null;
 let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
 
 // ---------- Trip-Alternativen ----------
@@ -60,8 +62,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Event Listener für automatische Wappen-Suche bei Blur
-  document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
-  document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
+  document.getElementById("homeTeam").addEventListener("blur", () => autoFetchTeamData('home'));
+  document.getElementById("awayTeam").addEventListener("blur", () => autoFetchTeamData('away'));
+  document.getElementById("stadiumAddress").addEventListener("input", () => {
+    stadiumAddressManuallyEdited = true;
+    const hint = document.getElementById("stadiumAutoHint");
+    if (hint) hint.textContent = "Manuell angepasst – wird nicht automatisch überschrieben.";
+  });
 
   // Manuelle URL-Änderung in der Vorschau spiegeln
   document.getElementById("homeLogo").addEventListener("input", () => updateCrestPreview('home'));
@@ -227,55 +234,116 @@ function generateSearchCandidates(inputName) {
   return candidates;
 }
 
-async function fetchCrestForTeam(teamName) {
+function normalizeWebsiteUrl(value) {
+  if (!value) return "";
+  const clean = value.trim();
+  return /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+}
+async function fetchVenueDetails(idVenue) {
+  if (!idVenue) return null;
+  try {
+    const url = `https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php?id=${encodeURIComponent(idVenue)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const venue = data && data.venues && data.venues[0] ? data.venues[0] : null;
+    if (!venue) return null;
+    return {
+      name: venue.strVenue || venue.strStadium || "",
+      capacity: parseInt(venue.intCapacity, 10) || null,
+      location: venue.strLocation || ""
+    };
+  } catch (err) {
+    console.error("Stadion-Suche fehlgeschlagen:", err);
+    return null;
+  }
+}
+async function fetchTeamData(teamName) {
   if (!teamName || !teamName.trim()) return null;
-
   const candidates = generateSearchCandidates(teamName);
-
   for (const candidate of candidates) {
     try {
       const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(candidate)}`;
       const res = await fetch(url);
       const data = await res.json();
-
-      if (data && data.teams && data.teams.length > 0) {
-        for (const team of data.teams) {
-          const rawBadge = team.strTeamBadge || team.strBadge;
-          if (rawBadge) {
-            return rawBadge.replace(/\\/g, '');
-          }
-        }
-      }
+      if (!data || !data.teams || data.teams.length === 0) continue;
+      const input = teamName.trim().toLowerCase();
+      const team = data.teams.find(t => {
+        const names = [t.strTeam, ...(t.strTeamAlternate || "").split(",")].map(x => (x || "").trim().toLowerCase());
+        return names.includes(input);
+      }) || data.teams[0];
+      const venue = await fetchVenueDetails(team.idVenue);
+      return {
+        idTeam: team.idTeam || "",
+        badge: (team.strTeamBadge || team.strBadge || "").replace(/\\/g, ""),
+        website: normalizeWebsiteUrl(team.strWebsite),
+        stadium: (venue && venue.name) || team.strStadium || "",
+        stadiumLocation: (venue && venue.location) || team.strLocation || "",
+        capacity: venue ? venue.capacity : null
+      };
     } catch (err) {
-      console.error(`Wappen-Suche Fehler für "${candidate}":`, err);
+      console.error(`Team-Suche Fehler für "${candidate}":`, err);
     }
   }
   return null;
 }
-
-async function autoFetchCrest(type) {
+async function fetchCrestForTeam(teamName) {
+  const teamData = await fetchTeamData(teamName);
+  return teamData ? teamData.badge : null;
+}
+function renderHomeTeamData(data) {
+  const panel = document.getElementById("homeTeamData");
+  if (!panel) return;
+  if (!data) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "block";
+  document.getElementById("homeStadiumInfo").textContent = data.stadium || "Nicht verfügbar";
+  document.getElementById("homeCapacityInfo").textContent = data.capacity ? data.capacity.toLocaleString("de-DE") : "Nicht verfügbar";
+  const link = document.getElementById("homeWebsiteLink");
+  if (data.website) {
+    link.href = data.website;
+    link.style.display = "inline-flex";
+  } else {
+    link.style.display = "none";
+  }
+}
+async function autoFetchTeamData(type) {
   const teamInput = document.getElementById(`${type}Team`);
   const logoInput = document.getElementById(`${type}Logo`);
   const manualGroup = document.getElementById(`${type}LogoGroup`);
   const teamName = teamInput.value.trim();
-
   if (!teamName) {
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "none";
+    if (type === "home") {
+      homeTeamSportsData = null;
+      renderHomeTeamData(null);
+    }
     return;
   }
-
-  const crestUrl = await fetchCrestForTeam(teamName);
-
-  if (crestUrl) {
-    logoInput.value = crestUrl;
-    showCrestPreview(type, crestUrl);
+  const teamData = await fetchTeamData(teamName);
+  if (teamData && teamData.badge) {
+    logoInput.value = teamData.badge;
+    showCrestPreview(type, teamData.badge);
   } else {
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "block";
   }
+  if (type === "home") {
+    homeTeamSportsData = teamData;
+    renderHomeTeamData(teamData);
+    const stadiumInput = document.getElementById("stadiumAddress");
+    const hint = document.getElementById("stadiumAutoHint");
+    if (teamData && teamData.stadium && !stadiumAddressManuallyEdited && !stadiumInput.value.trim()) {
+      stadiumInput.value = [teamData.stadium, teamData.stadiumLocation].filter(Boolean).join(", ");
+      if (hint) hint.textContent = "Automatisch aus dem Heimteam übernommen. Kann manuell angepasst werden.";
+    }
+  }
 }
-
+async function autoFetchCrest(type) {
+  return autoFetchTeamData(type);
+}
 function showCrestPreview(type, url) {
   const previewContainer = document.getElementById(`${type}CrestPreviewContainer`);
   const img = document.getElementById(`${type}CrestPreviewImg`);
@@ -367,6 +435,10 @@ async function addMatch(e) {
     away: awayTeam,
     homeLogo: homeLogo,
     awayLogo: awayLogo,
+    homeTeamId: homeTeamSportsData?.idTeam || "",
+    clubWebsite: homeTeamSportsData?.website || "",
+    stadiumCapacity: homeTeamSportsData?.capacity || null,
+    competitionType: document.getElementById("competitionType").value,
     leagueLevel: leagueLevel,
     countryCode: coords.countryCode,
     leagueName: getLeagueName(coords.countryCode, leagueLevel),
@@ -413,6 +485,16 @@ function editMatch(matchId) {
   document.getElementById("homeLogo").value = match.homeLogo || "";
   document.getElementById("awayLogo").value = match.awayLogo || "";
   document.getElementById("leagueLevel").value = match.leagueLevel || 1;
+  document.getElementById("competitionType").value = match.competitionType || "league";
+  homeTeamSportsData = {
+    idTeam: match.homeTeamId || "",
+    badge: match.homeLogo || "",
+    website: match.clubWebsite || "",
+    stadium: match.stadium || "",
+    capacity: match.stadiumCapacity || null
+  };
+  renderHomeTeamData(homeTeamSportsData);
+  stadiumAddressManuallyEdited = true;
   document.getElementById("matchDate").value = match.date || "";
   document.getElementById("matchTime").value = match.time || "";
   document.getElementById("stadiumAddress").value = match.stadium || "";
@@ -441,7 +523,12 @@ function editMatch(matchId) {
 
 function resetMatchForm() {
   editingMatchId = null;
+  stadiumAddressManuallyEdited = false;
+  homeTeamSportsData = null;
   document.getElementById("matchForm").reset();
+  renderHomeTeamData(null);
+  const stadiumHint = document.getElementById("stadiumAutoHint");
+  if (stadiumHint) stadiumHint.textContent = "";
   
   hideCrestPreview('home');
   hideCrestPreview('away');
@@ -531,13 +618,20 @@ function renderActiveTrip() {
   }
 }
 
+function competitionLabel(type) {
+  return ({ league: "Liga", national_cup: "Pokal national", international_cup: "Pokal international" })[type] || "Liga";
+}
+function clubWebsiteHtml(m) {
+  return m.clubWebsite ? `<br><a href="${escapeHtml(m.clubWebsite)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>` : "";
+}
 function matchPopupHtml(m) {
   const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-    🏟️ <b>${escapeHtml(m.stadium)}</b>${fullAddress}<br>
-    📅 ${m.date} um ${m.time} Uhr`;
+    🏆 ${competitionLabel(m.competitionType)}<br>
+    🏟️ <b>${escapeHtml(m.stadium)}</b>${m.stadiumCapacity ? ` · ${m.stadiumCapacity.toLocaleString("de-DE")} Plätze` : ""}${fullAddress}<br>
+    📅 ${m.date} um ${m.time} Uhr${clubWebsiteHtml(m)}`;
 }
 
 // Rendert die Match-Liste in der Sidebar mit Berücksichtigung der Alternativen (Dunkelgrün / Helles Grün)
@@ -590,7 +684,8 @@ function renderMatchList() {
       <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
       ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
-      📍 ${escapeHtml(m.stadium)}
+      📍 ${escapeHtml(m.stadium)}${m.stadiumCapacity ? ` · ${m.stadiumCapacity.toLocaleString("de-DE")} Plätze` : ""}<br>
+      🏆 ${competitionLabel(m.competitionType)}${m.clubWebsite ? `<br><a href="${escapeHtml(m.clubWebsite)}" target="_blank" rel="noopener noreferrer" class="ticket-link">🎟️ Vereinswebsite / Tickets</a>` : ""}
       ${reasonHtml}
       <div style="margin-top:0.4rem; display:flex; gap:0.4rem;">
         <button onclick="editMatch('${m.id}')" class="btn btn-small">Bearbeiten</button>
@@ -1312,7 +1407,8 @@ async function renderDayTiles(plan, trip) {
         </div>
         <div class="timeline-item match-item">
           <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
-          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
+          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${match.stadiumCapacity ? ` | ${match.stadiumCapacity.toLocaleString("de-DE")} Plätze` : ""}<br>
+          🏆 ${competitionLabel(match.competitionType)}${match.clubWebsite ? ` | <a href="${escapeHtml(match.clubWebsite)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>` : ""}
         </div>
       `;
 
