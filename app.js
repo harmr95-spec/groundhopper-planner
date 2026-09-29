@@ -15,7 +15,15 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
-let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele im RAM
+let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
+
+// ---------- Trip-Alternativen ----------
+let currentPlans = null;     // Array der aktuell berechneten Plan-Alternativen für den Trip
+let currentPlanIndex = 0;    // Index des gerade angezeigten Plans in currentPlans
+
+const MAX_DAY_ALTERNATIVES = 3; // Wie viele Ketten-Varianten pro Tag als Zweige verfolgt werden
+const BEAM_WIDTH = 6;           // Wie viele Trip-Kandidaten zwischen den Tagen mitgeführt werden
+const MAX_PLANS = 4;            // Wie viele Alternativen dem Nutzer am Ende angezeigt werden
 
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
@@ -74,12 +82,8 @@ function initMap() {
 function loadLocalStorage() {
   const data = localStorage.getItem("groundhopping_data");
   if (data) {
-    try {
-      const parsed = JSON.parse(data);
-      state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
-    } catch (e) {
-      console.error("Fehler beim Laden aus LocalStorage:", e);
-    }
+    const parsed = JSON.parse(data);
+    state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
   }
 }
 
@@ -102,7 +106,9 @@ function createNewTrip(defaultName = null) {
     startAddress: null,
     matches: [],
     overnightOverrides: {},
-    calculatedRoute: null
+    calculatedPlans: null,
+    selectedPlanIndex: 0,
+    selectedPlanSignature: null
   };
 
   state.trips.push(newTrip);
@@ -204,7 +210,7 @@ async function reverseGeocode(lat, lng, zoom = 10) {
   }
 }
 
-// ---------- Iterative Wappen-Suche ----------
+// ---------- Iterative Wappen-Suche (ohne Länder-Sperre) ----------
 function generateSearchCandidates(inputName) {
   const trimmed = inputName.trim();
   if (!trimmed) return [];
@@ -249,6 +255,7 @@ async function fetchCrestForTeam(teamName) {
   return null;
 }
 
+// Triggered per Blur-Event im Formular ('home' oder 'away')
 async function autoFetchCrest(type) {
   const teamInput = document.getElementById(`${type}Team`);
   const logoInput = document.getElementById(`${type}Logo`);
@@ -322,7 +329,7 @@ async function setStartAddress() {
   if (coords) {
     const trip = getActiveTrip();
     trip.startAddress = { address, lat: coords.lat, lng: coords.lng, countryCode: coords.countryCode };
-    trip.calculatedRoute = null; // Route muss neu berechnet werden
+    trip.calculatedPlans = null; // Zurücksetzen, da Startpunkt geändert wurde
     saveLocalStorage();
     statusEl.innerText = "✓ Gespeichert!";
     renderActiveTrip();
@@ -387,7 +394,7 @@ async function addMatch(e) {
     trip.matches.push(matchData);
   }
 
-  trip.calculatedRoute = null; // Stale Route zurücksetzen
+  trip.calculatedPlans = null; // Zurücksetzen, da sich Spiele geändert haben
   saveLocalStorage();
   resetMatchForm();
   renderActiveTrip();
@@ -436,7 +443,7 @@ function editMatch(matchId) {
 function resetMatchForm() {
   editingMatchId = null;
   document.getElementById("matchForm").reset();
-
+  
   hideCrestPreview('home');
   hideCrestPreview('away');
 
@@ -456,7 +463,7 @@ function deleteMatch(matchId) {
   const trip = getActiveTrip();
   trip.matches = trip.matches.filter(m => m.id !== matchId);
   delete trip.overnightOverrides[matchId];
-  trip.calculatedRoute = null; // Route nach Löschen eines Spiels zurücksetzen
+  trip.calculatedPlans = null; // Zurücksetzen, da ein Spiel gelöscht wurde
   saveLocalStorage();
   renderActiveTrip();
 }
@@ -483,13 +490,11 @@ function createCrestIcon(home, away, homeLogo, awayLogo) {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
   const div = document.createElement('div');
   div.innerText = str;
   return div.innerHTML;
 }
 
-// ---------- Visualisierung & Wiederherstellung der Aktiven Trip-Daten ----------
 function renderActiveTrip() {
   const trip = getActiveTrip();
   if (!trip) return;
@@ -498,46 +503,31 @@ function renderActiveTrip() {
   document.getElementById("matchCount").innerText = trip.matches.length;
   document.getElementById("startAddress").value = trip.startAddress ? trip.startAddress.address : "";
 
-  routeLayer.clearLayers();
+  // Wenn bereits berechnete Pläne für diesen Trip vorliegen, laden wir sie direkt wieder aus state/localStorage
+  if (trip.calculatedPlans && trip.calculatedPlans.length > 0) {
+    currentPlans = trip.calculatedPlans;
+    currentPlanIndex = trip.selectedPlanIndex || 0;
 
-  // Prüfen, ob bereits eine berechnete Route im Trip gespeichert ist
-  if (trip.calculatedRoute && trip.calculatedRoute.selectedIds) {
-    const selectedSet = new Set(trip.calculatedRoute.selectedIds);
-    lastSelectedMatchIds = selectedSet;
-
-    // Dropped-Gründe als Map wiederherstellen
-    const droppedMap = new Map((trip.calculatedRoute.dropped || []).map(d => [d.matchId, d.reason]));
-
-    renderMatchList(selectedSet, droppedMap);
-
-    // Timeline und Aussortiert-Sektion aus Speicher anzeigen
-    document.getElementById("timeline").innerHTML = trip.calculatedRoute.timelineHtml || '<p class="placeholder-text">Keine Timeline vorhanden.</p>';
-    document.getElementById("droppedSection").innerHTML = trip.calculatedRoute.droppedHtml || '';
-
-    // Routen-Geometrien auf der Karte wiederherstellen
-    if (trip.calculatedRoute.routeGeometries) {
-      trip.calculatedRoute.routeGeometries.forEach(geom => {
-        L.geoJSON(geom, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
-      });
+    if (trip.selectedPlanSignature) {
+      const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
+      if (found !== -1) currentPlanIndex = found;
     }
 
-    // Übernachtungs-Marker auf der Karte wiederherstellen
-    if (trip.calculatedRoute.overnightMarkers) {
-      trip.calculatedRoute.overnightMarkers.forEach(om => {
-        L.marker([om.lat, om.lng])
-          .bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(om.name)}`)
-          .addTo(routeLayer);
-      });
-    }
-
+    renderCurrentPlan();
   } else {
+    currentPlans = null;
+    currentPlanIndex = 0;
     lastSelectedMatchIds = null;
-    renderMatchList(null, null);
+
+    renderMatchList(null, null, null);
+    updateMapMarkers();
+
     document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
     document.getElementById("droppedSection").innerHTML = '';
+    const switcherEl = document.getElementById("planSwitcher");
+    if (switcherEl) switcherEl.innerHTML = '';
+    routeLayer.clearLayers();
   }
-
-  updateMapMarkers();
 }
 
 function matchPopupHtml(m) {
@@ -549,15 +539,9 @@ function matchPopupHtml(m) {
     📅 ${m.date} um ${m.time} Uhr`;
 }
 
-function renderMatchList(selectedIds, droppedReasons) {
+function renderMatchList(selectedIds, droppedReasons, altPlanNumbers) {
   const trip = getActiveTrip();
   const matchList = document.getElementById("matchList");
-
-  if (!trip || !trip.matches) {
-    matchList.innerHTML = "";
-    return;
-  }
-
   matchList.innerHTML = trip.matches
     .slice()
     .sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`))
@@ -567,10 +551,14 @@ function renderMatchList(selectedIds, droppedReasons) {
       if (selectedIds) {
         if (selectedIds.has(m.id)) {
           statusClass = "status-selected";
+        } else if (altPlanNumbers && altPlanNumbers.has(m.id)) {
+          statusClass = "status-alternative";
+          const plans = altPlanNumbers.get(m.id);
+          reasonHtml = `<div class="reason alt-reason">In Alternative ${plans.join(', ')} enthalten</div>`;
         } else {
           statusClass = "status-dropped";
           const reason = droppedReasons ? droppedReasons.get(m.id) : null;
-          if (reason) reasonHtml = `<div class="reason" style="text-decoration:none; color:var(--danger); font-size:0.75rem; margin-top:0.2rem;">${escapeHtml(reason)}</div>`;
+          if (reason) reasonHtml = `<div class="reason" style="text-decoration:none;">${escapeHtml(reason)}</div>`;
         }
       }
       return `
@@ -739,11 +727,10 @@ async function bestChainEndingAtLast(segment, startLoc, startTime) {
   return { chain, usedIndices: new Set(chain.map(m => m.id)), reachable: true };
 }
 
-async function optimizeDayChain(dayMatches, startLoc, startTime) {
+async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, startTime) {
   const chain = [];
   const dropped = [];
-  const mustIndices = [];
-  dayMatches.forEach((m, i) => { if (m.mustAttend) mustIndices.push(i); });
+  const mustIndices = [...new Set(forcedIndicesInput)].sort((a, b) => a - b);
 
   let cursor = 0;
   let currentLoc = startLoc;
@@ -751,11 +738,18 @@ async function optimizeDayChain(dayMatches, startLoc, startTime) {
 
   for (const mustIdx of mustIndices) {
     if (mustIdx < cursor) continue;
+    const forcedMatch = dayMatches[mustIdx];
+    const isRealMustAttend = !!forcedMatch.mustAttend;
     const segment = dayMatches.slice(cursor, mustIdx + 1);
     const { chain: segChain, usedIndices, reachable } = await bestChainEndingAtLast(segment, currentLoc, currentTime);
 
     if (!reachable) {
-      dropped.push({ match: dayMatches[mustIdx], reason: "Highlightspiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen." });
+      dropped.push({
+        match: forcedMatch,
+        reason: isRealMustAttend
+          ? "Highlightspiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen."
+          : "In dieser Alternative zeitlich nicht erreichbar."
+      });
       const fallbackSegment = dayMatches.slice(cursor, mustIdx);
       const { chain: fbChain, usedIndices: fbUsed } = await bestChainUnconstrained(fallbackSegment, currentLoc, currentTime);
       chain.push(...fbChain);
@@ -770,7 +764,14 @@ async function optimizeDayChain(dayMatches, startLoc, startTime) {
     } else {
       chain.push(...segChain);
       segment.forEach(m => {
-        if (!usedIndices.has(m.id)) dropped.push({ match: m, reason: "Zeitlich nicht mit der Tagesauswahl vereinbar (Highlightspiel hat Vorrang)." });
+        if (!usedIndices.has(m.id)) {
+          dropped.push({
+            match: m,
+            reason: isRealMustAttend
+              ? "Zeitlich nicht mit der Tagesauswahl vereinbar (Highlightspiel hat Vorrang)."
+              : "Zeitlich nicht mit dieser Alternative vereinbar."
+          });
+        }
       });
       const last = segChain[segChain.length - 1];
       currentLoc = { lat: last.lat, lng: last.lng };
@@ -874,8 +875,158 @@ function clearOvernightOverride(matchId) {
   calculateRoute();
 }
 
-// ---------- Gesamten Trip über alle Tage optimieren ----------
-async function buildOptimizedSchedule(trip) {
+// ---------- Tages-Alternativen erzeugen ----------
+function dayChainSignature(chain) {
+  return chain.map(m => m.id).sort().join(',');
+}
+
+async function generateDayCandidates(dayMatches, startLoc, startTime, maxAlternatives = MAX_DAY_ALTERNATIVES) {
+  const trueMustIndices = [];
+  dayMatches.forEach((m, i) => { if (m.mustAttend) trueMustIndices.push(i); });
+
+  const base = await chainWithForcedIndices(dayMatches, trueMustIndices, startLoc, startTime);
+  const seen = new Map();
+  seen.set(dayChainSignature(base.chain), base);
+
+  for (const d of base.dropped) {
+    if (d.match.mustAttend) continue;
+    const idx = dayMatches.indexOf(d.match);
+    if (idx === -1) continue;
+    const alt = await chainWithForcedIndices(dayMatches, [...trueMustIndices, idx], startLoc, startTime);
+    const sig = dayChainSignature(alt.chain);
+    if (!seen.has(sig)) seen.set(sig, alt);
+  }
+
+  for (const m of base.chain) {
+    if (m.mustAttend) continue;
+    const filtered = dayMatches.filter(x => x.id !== m.id);
+    const remappedMust = [];
+    filtered.forEach((x, i) => { if (x.mustAttend) remappedMust.push(i); });
+    const alt = await chainWithForcedIndices(filtered, remappedMust, startLoc, startTime);
+    const sig = dayChainSignature(alt.chain);
+    if (!seen.has(sig)) seen.set(sig, alt);
+  }
+
+  const candidates = [...seen.values()];
+
+  candidates.sort((a, b) => {
+    const mustDroppedA = a.dropped.filter(x => x.match.mustAttend).length;
+    const mustDroppedB = b.dropped.filter(x => x.match.mustAttend).length;
+    if (mustDroppedA !== mustDroppedB) return mustDroppedA - mustDroppedB;
+    if (b.chain.length !== a.chain.length) return b.chain.length - a.chain.length;
+    const scoreA = a.chain.reduce((s, m) => s + priorityScore(m), 0);
+    const scoreB = b.chain.reduce((s, m) => s + priorityScore(m), 0);
+    return scoreB - scoreA;
+  });
+
+  return candidates.slice(0, Math.max(1, maxAlternatives));
+}
+
+async function computeDayTravelMin(chain, startLoc) {
+  let total = 0;
+  let loc = startLoc;
+  for (const m of chain) {
+    total += await getCachedTravelMin(loc.lat, loc.lng, m.lat, m.lng);
+    loc = { lat: m.lat, lng: m.lng };
+  }
+  return total;
+}
+
+function comparePlans(a, b) {
+  if (a.infeasibleNights !== b.infeasibleNights) return a.infeasibleNights - b.infeasibleNights;
+  if (a.mustAttendCount !== b.mustAttendCount) return b.mustAttendCount - a.mustAttendCount;
+  if (a.matchCount !== b.matchCount) return b.matchCount - a.matchCount;
+  if (a.tightNights !== b.tightNights) return a.tightNights - b.tightNights;
+  return a.totalTravelMin - b.totalTravelMin;
+}
+
+function finalizePlanState(beamState, trip) {
+  const selected = [];
+  const dropped = [];
+  beamState.dayChains.forEach(dc => {
+    selected.push(...dc.chain);
+    dropped.push(...dc.dropped);
+  });
+  const mustAttendTotal = trip.matches.filter(m => m.mustAttend).length;
+  const signature = beamState.dayChains.map(dc => dayChainSignature(dc.chain)).join('|');
+
+  return {
+    dayChains: beamState.dayChains,
+    selected,
+    dropped,
+    totalTravelMin: beamState.totalTravelMin,
+    tightNights: beamState.tightNights,
+    infeasibleNights: beamState.infeasibleNights,
+    matchCount: beamState.matchCount,
+    mustAttendCount: beamState.mustAttendCount,
+    mustAttendTotal,
+    signature
+  };
+}
+
+function shortMatchLabel(m) {
+  return `${m.home}–${m.away}`;
+}
+
+function formatDateShort(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  return d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+}
+
+function formatDateLong(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  return d.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function changedDatesOf(basePlan, plan) {
+  const changed = new Set();
+  const baseByDate = new Map(basePlan.dayChains.map(dc => [dc.date, dc]));
+  plan.dayChains.forEach(dc => {
+    const baseDc = baseByDate.get(dc.date);
+    const baseSig = baseDc ? dayChainSignature(baseDc.chain) : '';
+    if (baseSig !== dayChainSignature(dc.chain)) changed.add(dc.date);
+  });
+  return changed;
+}
+
+function diffDescription(basePlan, plan) {
+  const parts = [];
+  const baseByDate = new Map(basePlan.dayChains.map(dc => [dc.date, dc]));
+
+  plan.dayChains.forEach(dc => {
+    const baseDc = baseByDate.get(dc.date);
+    const baseIds = new Set(baseDc ? baseDc.chain.map(m => m.id) : []);
+    const ids = new Set(dc.chain.map(m => m.id));
+
+    const added = dc.chain.filter(m => !baseIds.has(m.id));
+    const removed = (baseDc ? baseDc.chain : []).filter(m => !ids.has(m.id));
+    if (added.length === 0 && removed.length === 0) return;
+
+    const label = formatDateShort(dc.date);
+    if (added.length && removed.length) {
+      parts.push(`${label}: ${removed.map(shortMatchLabel).join(', ')} → ${added.map(shortMatchLabel).join(', ')}`);
+    } else if (added.length) {
+      parts.push(`${label}: zusätzlich ${added.map(shortMatchLabel).join(', ')}`);
+    } else {
+      parts.push(`${label}: ohne ${removed.map(shortMatchLabel).join(', ')}`);
+    }
+  });
+
+  const travelDelta = Math.round(plan.totalTravelMin - basePlan.totalTravelMin);
+  if (travelDelta !== 0) {
+    parts.push(`${travelDelta > 0 ? '+' : ''}${travelDelta} Min. Fahrt`);
+  }
+
+  const nightDelta = plan.tightNights - basePlan.tightNights;
+  if (nightDelta !== 0) {
+    parts.push(`${nightDelta > 0 ? '+' : ''}${nightDelta} enge Nachtfahrt${Math.abs(nightDelta) === 1 ? '' : 'en'}`);
+  }
+
+  return parts.join(' · ') || 'Gleiche Spiele, andere Reihenfolge/Route.';
+}
+
+// ---------- Gesamten Trip über alle Tage optimieren – mit Alternativen ----------
+async function buildOptimizedScheduleAlternatives(trip) {
   const byDate = new Map();
   trip.matches.forEach(m => {
     if (!byDate.has(m.date)) byDate.set(m.date, []);
@@ -884,40 +1035,101 @@ async function buildOptimizedSchedule(trip) {
   const dates = [...byDate.keys()].sort();
   dates.forEach(d => byDate.get(d).sort((a, b) => a.time.localeCompare(b.time)));
 
-  const selected = [];
-  const dropped = [];
-
-  let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
-  let currentTime = new Date(`${dates[0]}T00:00:00`);
+  let beam = [{
+    dayChains: [],
+    currentLoc: { lat: trip.startAddress.lat, lng: trip.startAddress.lng },
+    currentTime: new Date(`${dates[0]}T00:00:00`),
+    totalTravelMin: 0,
+    tightNights: 0,
+    infeasibleNights: 0,
+    matchCount: 0,
+    mustAttendCount: 0
+  }];
 
   for (let d = 0; d < dates.length; d++) {
-    const dayMatches = byDate.get(dates[d]);
-    const { chain, dropped: dayDropped } = await optimizeDayChain(dayMatches, currentLoc, currentTime);
-    selected.push(...chain);
-    dropped.push(...dayDropped);
-
+    const date = dates[d];
+    const dayMatches = byDate.get(date);
     const nextDate = dates[d + 1];
-    if (nextDate) {
-      const lastOfDay = chain.length > 0 ? chain[chain.length - 1] : null;
-      const nextDayMatches = byDate.get(nextDate);
-      const nextGuess = nextDayMatches[0];
+    const nextDayMatches = nextDate ? byDate.get(nextDate) : null;
 
-      if (lastOfDay && nextGuess) {
-        const override = trip.overnightOverrides[lastOfDay.id];
-        if (override) {
-          currentLoc = { lat: override.lat, lng: override.lng };
-        } else {
-          const plan = await planOvernight(lastOfDay, nextGuess);
-          currentLoc = { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng };
+    const nextBeamMap = new Map();
+
+    for (const beamState of beam) {
+      const dayCandidates = await generateDayCandidates(dayMatches, beamState.currentLoc, beamState.currentTime);
+
+      for (const cand of dayCandidates) {
+        const dayTravelMin = await computeDayTravelMin(cand.chain, beamState.currentLoc);
+
+        let overnight = null;
+        let nextLoc = beamState.currentLoc;
+        let nextTime = beamState.currentTime;
+        let transitionTravelMin = 0;
+        let tightAdd = 0;
+        let infeasibleAdd = 0;
+
+        if (nextDayMatches) {
+          const lastOfDay = cand.chain.length > 0 ? cand.chain[cand.chain.length - 1] : null;
+          const nextGuess = nextDayMatches[0];
+
+          if (lastOfDay && nextGuess) {
+            const override = trip.overnightOverrides[lastOfDay.id];
+            const plan = await planOvernight(lastOfDay, nextGuess);
+            transitionTravelMin = plan.totalTravelMin;
+            if (!plan.feasible) infeasibleAdd = 1;
+            else if (plan.extraMinutesUsed > 0) tightAdd = 1;
+
+            if (override) {
+              nextLoc = { lat: override.lat, lng: override.lng };
+              overnight = { fromMatchId: lastOfDay.id, override: true, lat: override.lat, lng: override.lng, name: override.address };
+            } else {
+              nextLoc = { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng };
+              overnight = { fromMatchId: lastOfDay.id, override: false, lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng, name: plan.overnightPoint.suggestedName };
+            }
+          }
+          nextTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
         }
-        currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
-      } else {
-        currentTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
+
+        const newDayChains = [...beamState.dayChains, { date, chain: cand.chain, dropped: cand.dropped, overnightAfter: overnight }];
+        const signature = newDayChains.map(dc => dayChainSignature(dc.chain)).join('|');
+
+        const newState = {
+          dayChains: newDayChains,
+          currentLoc: nextLoc,
+          currentTime: nextTime,
+          totalTravelMin: beamState.totalTravelMin + dayTravelMin + transitionTravelMin,
+          tightNights: beamState.tightNights + tightAdd,
+          infeasibleNights: beamState.infeasibleNights + infeasibleAdd,
+          matchCount: beamState.matchCount + cand.chain.length,
+          mustAttendCount: beamState.mustAttendCount + cand.chain.filter(m => m.mustAttend).length
+        };
+
+        const existing = nextBeamMap.get(signature);
+        if (!existing || comparePlans(newState, existing) < 0) {
+          nextBeamMap.set(signature, newState);
+        }
       }
     }
+
+    let nextBeam = [...nextBeamMap.values()];
+    nextBeam.sort(comparePlans);
+    beam = nextBeam.slice(0, BEAM_WIDTH);
   }
 
-  return { selected, dropped };
+  const finalized = beam.map(b => finalizePlanState(b, trip));
+  finalized.sort(comparePlans);
+  const diverse = finalized.slice(0, MAX_PLANS);
+
+  diverse.forEach((p, i) => {
+    if (i === 0) {
+      p.description = "Beste gefundene Kombination nach Highlightspielen, Spielanzahl und Fahrzeit.";
+      p.changedDates = [];
+    } else {
+      p.description = diffDescription(diverse[0], p);
+      p.changedDates = Array.from(changedDatesOf(diverse[0], p));
+    }
+  });
+
+  return diverse;
 }
 
 // ---------- Hauptberechnung ----------
@@ -925,139 +1137,263 @@ async function calculateRoute() {
   const trip = getActiveTrip();
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
+  const switcherEl = document.getElementById("planSwitcher");
 
   if (!trip.startAddress || trip.matches.length === 0) {
     alert("Bitte gib eine Startadresse und mindestens ein Spiel ein.");
     return;
   }
 
-  timelineEl.innerHTML = "Berechne optimale Route und maximale Spiele-Anzahl pro Tag...";
+  timelineEl.innerHTML = "Berechne optimale Route, Spiele-Anzahl und Alternativen...";
   droppedEl.innerHTML = "";
+  if (switcherEl) switcherEl.innerHTML = "";
   routeLayer.clearLayers();
   travelCache.clear();
 
-  const { selected: selectedMatches, dropped } = await buildOptimizedSchedule(trip);
-  const selectedIds = new Set(selectedMatches.map(m => m.id));
+  currentPlans = await buildOptimizedScheduleAlternatives(trip);
 
-  lastSelectedMatchIds = selectedIds;
-  const droppedReasons = new Map(dropped.map(d => [d.match.id, d.reason]));
+  if (!currentPlans || currentPlans.length === 0) {
+    timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
+    lastSelectedMatchIds = new Set();
+    trip.calculatedPlans = null;
+    saveLocalStorage();
+    updateMapMarkers();
+    return;
+  }
+
+  let idx = 0;
+  if (trip.selectedPlanSignature) {
+    const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
+    if (found !== -1) idx = found;
+  }
+  currentPlanIndex = idx;
+  trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
+  trip.selectedPlanIndex = currentPlanIndex;
+  trip.calculatedPlans = currentPlans; // Speichern der Alternativen direkt im Trip
+
+  saveLocalStorage();
+
+  await renderCurrentPlan();
+}
+
+function choosePlan(delta) {
+  if (!currentPlans || currentPlans.length === 0) return;
+  currentPlanIndex = (currentPlanIndex + delta + currentPlans.length) % currentPlans.length;
+
+  const trip = getActiveTrip();
+  if (trip) {
+    trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
+    trip.selectedPlanIndex = currentPlanIndex;
+    saveLocalStorage();
+  }
+
+  renderCurrentPlan();
+}
+
+async function renderCurrentPlan() {
+  const trip = getActiveTrip();
+  if (!trip || !currentPlans || currentPlans.length === 0) return;
+  const plan = currentPlans[currentPlanIndex];
+
+  lastSelectedMatchIds = new Set(plan.selected.map(m => m.id));
+  updateMapMarkers();
+
+  renderPlanSwitcher(plan);
+  renderSidebarWithAlternatives(plan);
+  await renderDayTiles(plan, trip);
+}
+
+function renderPlanSwitcher(plan) {
+  const el = document.getElementById("planSwitcher");
+  if (!el) return;
+
+  if (!currentPlans || currentPlans.length <= 1) {
+    el.innerHTML = `<div class="plan-switcher-single">${planStatsHtml(plan)}</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="plan-switcher">
+      <button class="btn btn-small" onclick="choosePlan(-1)" aria-label="Vorherige Alternative">←</button>
+      <div class="plan-switcher-info">
+        <strong>Alternative ${currentPlanIndex + 1} / ${currentPlans.length}</strong>
+        <div class="plan-description">${escapeHtml(plan.description)}</div>
+        ${planStatsHtml(plan)}
+      </div>
+      <button class="btn btn-small" onclick="choosePlan(1)" aria-label="Nächste Alternative">→</button>
+    </div>
+  `;
+}
+
+function planStatsHtml(plan) {
+  const hrs = Math.floor(plan.totalTravelMin / 60);
+  const mins = Math.round(plan.totalTravelMin % 60);
+  const travelStr = `${hrs > 0 ? hrs + ' h ' : ''}${mins} Min.`;
+  let nightWarn = "";
+  if (plan.infeasibleNights > 0) {
+    nightWarn = ` · <span style="color:#dc3545;">${plan.infeasibleNights} Übernachtung(en) eng/nicht machbar</span>`;
+  } else if (plan.tightNights > 0) {
+    nightWarn = ` · ${plan.tightNights} enge Nachtfahrt(en)`;
+  }
+  const mustLabel = plan.mustAttendTotal > 0 ? ` (${plan.mustAttendCount}/${plan.mustAttendTotal} ⭐)` : '';
+  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel} · 🚗 ca. ${travelStr}${nightWarn}</div>`;
+}
+
+function renderSidebarWithAlternatives(plan) {
+  const selectedIds = new Set(plan.selected.map(m => m.id));
+  const droppedReasons = new Map(plan.dropped.map(d => [d.match.id, d.reason]));
+
+  const altPlanNumbers = new Map();
+  if (currentPlans && currentPlans.length > 1) {
+    currentPlans.forEach((p, i) => {
+      if (i === currentPlanIndex) return;
+      p.selected.forEach(m => {
+        if (selectedIds.has(m.id)) return;
+        if (!altPlanNumbers.has(m.id)) altPlanNumbers.set(m.id, []);
+        altPlanNumbers.get(m.id).push(i + 1);
+      });
+    });
+  }
+
+  renderMatchList(selectedIds, droppedReasons, altPlanNumbers);
+}
+
+async function renderDayTiles(plan, trip) {
+  const timelineEl = document.getElementById("timeline");
+  const droppedEl = document.getElementById("droppedSection");
+  routeLayer.clearLayers();
 
   let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
   let html = "";
-  const routeGeometries = [];
-  const overnightMarkersList = [];
+  const allDropped = [];
 
-  for (let i = 0; i < selectedMatches.length; i++) {
-    const match = selectedMatches[i];
-    const osrm = await getOSRMRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+  const changedSet = Array.isArray(plan.changedDates) ? new Set(plan.changedDates) : (plan.changedDates instanceof Set ? plan.changedDates : new Set());
 
-    if (osrm.geometry) {
-      L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
-      routeGeometries.push(osrm.geometry);
+  for (let d = 0; d < plan.dayChains.length; d++) {
+    const dc = plan.dayChains[d];
+    allDropped.push(...dc.dropped);
+
+    const dateLabel = formatDateLong(dc.date);
+    const isChanged = currentPlanIndex !== 0 && changedSet.has(dc.date);
+    const changedBadge = isChanged
+      ? '<span class="tile-changed-badge" title="Unterscheidet sich von Alternative 1">◆ geändert</span>'
+      : '';
+
+    let tileBody = "";
+
+    if (dc.chain.length === 0) {
+      tileBody = '<p class="placeholder-text">Kein Spiel eingeplant.</p>';
     }
 
-    const kickOff = new Date(`${match.date}T${match.time}`);
-    const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
-    const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
-    const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
-    const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
-    const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
+    for (let i = 0; i < dc.chain.length; i++) {
+      const match = dc.chain[i];
+      const osrm = await getOSRMRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
 
-    html += `
-      <div class="timeline-item">
-        <strong>🚗 Fahrt nach ${escapeHtml(match.stadium)}</strong><br>
-        Abfahrt: ${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
-        Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
-        <br>
-        <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
-      </div>
-      <div class="timeline-item match-item">
-        <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
-        ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
-      </div>
-    `;
-
-    const nextMatch = selectedMatches[i + 1];
-    if (nextMatch && nextMatch.date !== match.date) {
-      const override = trip.overnightOverrides[match.id];
-      const plan = await planOvernight(match, nextMatch);
-      const overnightLoc = override
-        ? { lat: override.lat, lng: override.lng, name: override.address }
-        : { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng, name: plan.overnightPoint.suggestedName };
-
-      let warningHtml = "";
-      if (!plan.feasible) {
-        warningHtml = `<div class="danger-banner">🚫 Zeitlich eng: Auch mit bis zu ${state.settings.maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${plan.missingMin} Minuten, um pünktlich zum nächsten Spiel zu kommen. Ggf. eines der beiden Spiele entfernen.</div>`;
-      } else if (plan.extraMinutesUsed > 0) {
-        warningHtml = `<div class="warning-banner">⚠️ Enges Zeitfenster: benötigt ca. ${plan.extraMinutesUsed} Min. mehr Nachtfahrt als in den Einstellungen als Standard hinterlegt.</div>`;
+      if (osrm.geometry) {
+        L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
       }
 
-      const legDeeplink1 = generateGoogleDeeplink(match.lat, match.lng, overnightLoc.lat, overnightLoc.lng);
-      const legDeeplink2 = generateGoogleDeeplink(overnightLoc.lat, overnightLoc.lng, nextMatch.lat, nextMatch.lng);
-      const hotelLink = generateHotelSearchLink(overnightLoc.lat, overnightLoc.lng);
-      const inputId = `overnightInput_${match.id}`;
+      const kickOff = new Date(`${match.date}T${match.time}`);
+      const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+      const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
+      const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
+      const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+      const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
 
-      html += `
-        <div class="timeline-item overnight-block">
-          <h4>🌙 Übernachtung erforderlich</h4>
-          ${warningHtml}
-          <p>Vorschlag: ca. ${plan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.</p>
-          ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
-          <div class="form-row">
-            <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(overnightLoc.name)}" />
-            <button class="btn btn-small" onclick="saveOvernightOverride('${match.id}', '${inputId}')">Übernehmen</button>
-            ${override ? `<button class="btn btn-small btn-secondary" onclick="clearOvernightOverride('${match.id}')">Vorschlag zurücksetzen</button>` : ''}
-          </div>
-          <a href="${legDeeplink1}" target="_blank" class="deeplink-btn">🗺️ Zur Übernachtung</a>
-          <a href="${hotelLink}" target="_blank" class="deeplink-btn hotel-btn">🏨 Unterkünfte hier suchen</a>
-          <a href="${legDeeplink2}" target="_blank" class="deeplink-btn">🗺️ Weiter zum nächsten Stadion</a>
+      tileBody += `
+        <div class="timeline-item">
+          <strong>🚗 Fahrt nach ${escapeHtml(match.stadium)}</strong><br>
+          Abfahrt: ${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
+          Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
+          <br>
+          <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
+        </div>
+        <div class="timeline-item match-item">
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
+          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
         </div>
       `;
 
-      L.marker([overnightLoc.lat, overnightLoc.lng])
-        .bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(overnightLoc.name)}`)
-        .addTo(routeLayer);
-
-      overnightMarkersList.push({ lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name });
-
-      currentLoc = { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
-    } else {
       currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
     }
+
+    const nextDc = plan.dayChains[d + 1];
+    if (nextDc && dc.chain.length > 0) {
+      const lastMatch = dc.chain[dc.chain.length - 1];
+      const nextMatchGuess = nextDc.chain.length > 0 ? nextDc.chain[0] : null;
+
+      if (nextMatchGuess) {
+        const override = trip.overnightOverrides[lastMatch.id];
+        const opPlan = await planOvernight(lastMatch, nextMatchGuess);
+        const overnightLoc = override
+          ? { lat: override.lat, lng: override.lng, name: override.address }
+          : { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName };
+
+        let warningHtml = "";
+        if (!opPlan.feasible) {
+          warningHtml = `<div class="danger-banner">🚫 Zeitlich eng: Auch mit bis zu ${state.settings.maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${opPlan.missingMin} Minuten, um pünktlich zum nächsten Spiel zu kommen. Ggf. eines der beiden Spiele entfernen.</div>`;
+        } else if (opPlan.extraMinutesUsed > 0) {
+          warningHtml = `<div class="warning-banner">⚠️ Enges Zeitfenster: benötigt ca. ${opPlan.extraMinutesUsed} Min. mehr Nachtfahrt als in den Einstellungen als Standard hinterlegt.</div>`;
+        }
+
+        const legDeeplink1 = generateGoogleDeeplink(lastMatch.lat, lastMatch.lng, overnightLoc.lat, overnightLoc.lng);
+        const legDeeplink2 = generateGoogleDeeplink(overnightLoc.lat, overnightLoc.lng, nextMatchGuess.lat, nextMatchGuess.lng);
+        const hotelLink = generateHotelSearchLink(overnightLoc.lat, overnightLoc.lng);
+        const inputId = `overnightInput_${lastMatch.id}`;
+
+        tileBody += `
+          <div class="timeline-item overnight-block">
+            <h4>🌙 Übernachtung erforderlich</h4>
+            ${warningHtml}
+            <p>Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.</p>
+            ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
+            <div class="form-row">
+              <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(overnightLoc.name)}" />
+              <button class="btn btn-small" onclick="saveOvernightOverride('${lastMatch.id}', '${inputId}')">Übernehmen</button>
+              ${override ? `<button class="btn btn-small btn-secondary" onclick="clearOvernightOverride('${lastMatch.id}')">Vorschlag zurücksetzen</button>` : ''}
+            </div>
+            <a href="${legDeeplink1}" target="_blank" class="deeplink-btn">🗺️ Zur Übernachtung</a>
+            <a href="${hotelLink}" target="_blank" class="deeplink-btn hotel-btn">🏨 Unterkünfte hier suchen</a>
+            <a href="${legDeeplink2}" target="_blank" class="deeplink-btn">🗺️ Weiter zum nächsten Stadion</a>
+          </div>
+        `;
+
+        L.marker([overnightLoc.lat, overnightLoc.lng])
+          .bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(overnightLoc.name)}`)
+          .addTo(routeLayer);
+
+        currentLoc = { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
+      }
+    }
+
+    html += `
+      <div class="day-tile">
+        <div class="day-tile-header">
+          <h3>${dateLabel}</h3>
+          ${changedBadge}
+        </div>
+        <div class="day-tile-body">${tileBody}</div>
+      </div>
+    `;
   }
 
-  const timelineContentHtml = html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
-  timelineEl.innerHTML = timelineContentHtml;
+  timelineEl.innerHTML = html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
 
-  let droppedHtml = "";
-  if (dropped.length > 0) {
-    droppedHtml = `
+  if (allDropped.length > 0) {
+    droppedEl.innerHTML = `
       <div class="dropped-section">
-        <h3>Aussortierte Spiele (${dropped.length})</h3>
-        ${dropped.map(d => `
+        <h3>Aussortierte Spiele (${allDropped.length})</h3>
+        ${allDropped.map(dd => `
           <div class="dropped-match">
-            ${escapeHtml(d.match.home)} vs. ${escapeHtml(d.match.away)} –${d.match.date} ${d.match.time} Uhr (${escapeHtml(d.match.leagueName || getLeagueName(d.match.countryCode, d.match.leagueLevel))})
-            <span class="reason">Grund: ${escapeHtml(d.reason)}</span>
+            ${escapeHtml(dd.match.home)} vs. ${escapeHtml(dd.match.away)} –${dd.match.date} ${dd.match.time} Uhr (${escapeHtml(dd.match.leagueName || getLeagueName(dd.match.countryCode, dd.match.leagueLevel))})
+            <span class="reason">Grund: ${escapeHtml(dd.reason)}</span>
           </div>
         `).join('')}
       </div>
     `;
+  } else {
+    droppedEl.innerHTML = '';
   }
-  droppedEl.innerHTML = droppedHtml;
-
-  // BERECHNETES ERGEBNIS DAUERHAFT IM TRIP SPEICHERN
-  trip.calculatedRoute = {
-    selectedIds: Array.from(selectedIds),
-    dropped: dropped.map(d => ({ matchId: d.match.id, reason: d.reason })),
-    timelineHtml: timelineContentHtml,
-    droppedHtml: droppedHtml,
-    routeGeometries: routeGeometries,
-    overnightMarkers: overnightMarkersList
-  };
-
-  saveLocalStorage();
-  renderMatchList(selectedIds, droppedReasons);
-  updateMapMarkers();
 }
 
 // ---------- Settings Modal ----------
@@ -1086,8 +1422,12 @@ function saveSettings() {
   state.settings.nextDayStartHour = document.getElementById("settingNextDayStart").value;
   state.settings.maxExtraNightDriveMin = parseInt(document.getElementById("settingMaxExtraNightDrive").value);
 
+  const trip = getActiveTrip();
+  if (trip) trip.calculatedPlans = null; // Zurücksetzen, da Puffer/Zeiten geändert wurden
+
   saveLocalStorage();
   toggleSettingsModal();
+  renderActiveTrip();
 }
 
 // ---------- Export & Import ----------
@@ -1099,12 +1439,21 @@ function exportActiveTrip() {
     return;
   }
 
+  // Aktuellen Berechnungszustand vor dem Export sichern
+  if (currentPlans) {
+    trip.calculatedPlans = currentPlans;
+    trip.selectedPlanIndex = currentPlanIndex;
+    if (currentPlans[currentPlanIndex]) {
+      trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
+    }
+  }
+
   const exportData = {
     type: "groundhopping_trip",
     version: 1,
     exportedAt: new Date().toISOString(),
     settings: state.settings,
-    trip: trip // Beinhaltet nun trip.calculatedRoute
+    trip: trip
   };
 
   const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
