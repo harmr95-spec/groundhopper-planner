@@ -15,7 +15,9 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
-let autoStadiumValue = "";
+let lastAutoFilledStadium = "";
+let currentHomeTeamData = null;
+let currentVenueData = null;
 let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
 
 // ---------- Trip-Alternativen ----------
@@ -64,11 +66,16 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
 
+  // Eine manuelle Stadionänderung entkoppelt das Stadion vom Heimverein.
   document.getElementById("stadiumAddress").addEventListener("input", (event) => {
-    if (event.target.value.trim() !== autoStadiumValue) {
-      autoStadiumValue = "";
+    const value = event.target.value.trim();
+    if (value !== lastAutoFilledStadium) {
+      lastAutoFilledStadium = "";
+      currentVenueData = null;
+      renderVenueInfo(null, value ? "Stadioninformationen werden nach Verlassen des Feldes gesucht …" : "");
     }
   });
+  document.getElementById("stadiumAddress").addEventListener("blur", searchManualVenueIfNeeded);
 
   // Manuelle URL-Änderung in der Vorschau spiegeln
   document.getElementById("homeLogo").addEventListener("input", () => updateCrestPreview('home'));
@@ -234,9 +241,20 @@ function generateSearchCandidates(inputName) {
   return candidates;
 }
 
+function normalizeWebsiteUrl(value) {
+  if (!value) return "";
+  const cleaned = String(value).trim();
+  return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+}
+
+function parseCapacity(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = parseInt(String(value).replace(/[^0-9]/g, ""), 10);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
 async function fetchSoccerTeam(teamName) {
   if (!teamName || !teamName.trim()) return null;
-
   const candidates = generateSearchCandidates(teamName);
   const wantedName = teamName.trim().toLowerCase();
 
@@ -245,28 +263,99 @@ async function fetchSoccerTeam(teamName) {
       const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(candidate)}`;
       const res = await fetch(url);
       const data = await res.json();
-
       if (!data || !Array.isArray(data.teams)) continue;
 
       const soccerTeams = data.teams.filter(team =>
         String(team.strSport || "").trim().toLowerCase() === "soccer"
       );
-
-      if (soccerTeams.length === 0) continue;
+      if (!soccerTeams.length) continue;
 
       const exactTeam = soccerTeams.find(team => {
         const names = [team.strTeam, ...(team.strTeamAlternate || "").split(",")]
           .map(name => String(name || "").trim().toLowerCase());
         return names.includes(wantedName);
       });
-
       return exactTeam || soccerTeams[0];
     } catch (err) {
       console.error(`Fußballteam-Suche Fehler für "${candidate}":`, err);
     }
   }
-
   return null;
+}
+
+async function lookupVenueById(idVenue) {
+  if (!idVenue) return null;
+  try {
+    const url = `https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php?id=${encodeURIComponent(idVenue)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const venue = data && Array.isArray(data.venues) ? data.venues[0] : null;
+    return venue ? {
+      id: venue.idVenue || String(idVenue),
+      name: venue.strVenue || venue.strStadium || "",
+      capacity: parseCapacity(venue.intCapacity),
+      source: "team"
+    } : null;
+  } catch (err) {
+    console.error("Venue-Lookup Fehler:", err);
+    return null;
+  }
+}
+
+async function searchVenueByName(venueName) {
+  if (!venueName || !venueName.trim()) return null;
+  try {
+    const url = `https://www.thesportsdb.com/api/v1/json/3/searchvenues.php?v=${encodeURIComponent(venueName.trim())}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data || !Array.isArray(data.venues) || !data.venues.length) return null;
+    const wanted = venueName.trim().toLowerCase();
+    const soccerVenues = data.venues.filter(venue => {
+      const sport = String(venue.strSport || "").trim().toLowerCase();
+      return !sport || sport === "soccer";
+    });
+    const pool = soccerVenues.length ? soccerVenues : [];
+    const exact = pool.find(venue => {
+      const names = [venue.strVenue, venue.strVenueAlternate, venue.strStadium]
+        .filter(Boolean).map(name => String(name).trim().toLowerCase());
+      return names.includes(wanted);
+    });
+    const venue = exact || pool[0];
+    if (!venue) return null;
+    return {
+      id: venue.idVenue || "",
+      name: venue.strVenue || venue.strStadium || venueName.trim(),
+      capacity: parseCapacity(venue.intCapacity),
+      source: "manual"
+    };
+  } catch (err) {
+    console.error("Stadion-Suche Fehler:", err);
+    return null;
+  }
+}
+
+function renderVenueInfo(venue, message = "") {
+  const box = document.getElementById("venueInfo");
+  if (!box) return;
+  if (venue && venue.capacity) {
+    box.innerHTML = `<span>🏟️ Kapazität: <strong>${venue.capacity.toLocaleString("de-DE")}</strong></span>`;
+    box.style.display = "block";
+  } else if (message) {
+    box.textContent = message;
+    box.style.display = "block";
+  } else {
+    box.textContent = "";
+    box.style.display = "none";
+  }
+}
+
+async function searchManualVenueIfNeeded() {
+  const input = document.getElementById("stadiumAddress");
+  const value = input.value.trim();
+  if (!value || value === lastAutoFilledStadium) return;
+  renderVenueInfo(null, "Stadioninformationen werden gesucht …");
+  currentVenueData = await searchVenueByName(value);
+  renderVenueInfo(currentVenueData);
 }
 
 async function fetchCrestForTeam(teamName) {
@@ -284,10 +373,10 @@ async function autoFetchCrest(type) {
   if (!teamName) {
     hideCrestPreview(type);
     if (manualGroup) manualGroup.style.display = "none";
+    if (type === "home") currentHomeTeamData = null;
     return;
   }
 
-  // Eine gemeinsame, bereits auf Soccer gefilterte Response für Badge und Stadion.
   const team = await fetchSoccerTeam(teamName);
   const rawBadge = team && (team.strTeamBadge || team.strBadge);
   const crestUrl = rawBadge ? rawBadge.replace(/\\/g, "") : null;
@@ -301,15 +390,28 @@ async function autoFetchCrest(type) {
     if (manualGroup) manualGroup.style.display = "block";
   }
 
-  if (type === "home" && team && team.strStadium) {
-    const stadiumInput = document.getElementById("stadiumAddress");
-    const currentValue = stadiumInput.value.trim();
+  if (type !== "home") return;
+  currentHomeTeamData = team ? {
+    idTeam: team.idTeam || "",
+    website: normalizeWebsiteUrl(team.strWebsite),
+    idVenue: team.idVenue || "",
+    stadium: team.strStadium || ""
+  } : null;
 
-    // Nur leere oder zuvor automatisch gesetzte Werte überschreiben.
-    if (currentValue === "" || currentValue === autoStadiumValue) {
-      stadiumInput.value = team.strStadium.trim();
-      autoStadiumValue = stadiumInput.value.trim();
+  if (!team) return;
+  const stadiumInput = document.getElementById("stadiumAddress");
+  const currentValue = stadiumInput.value.trim();
+  const mayOverwrite = currentValue === "" || currentValue === lastAutoFilledStadium;
+
+  if (mayOverwrite && team.strStadium) {
+    stadiumInput.value = team.strStadium.trim();
+    lastAutoFilledStadium = stadiumInput.value.trim();
+    currentVenueData = await lookupVenueById(team.idVenue);
+    if (!currentVenueData) {
+      currentVenueData = await searchVenueByName(lastAutoFilledStadium);
+      if (currentVenueData) currentVenueData.source = "team";
     }
+    renderVenueInfo(currentVenueData);
   }
 }
 
@@ -379,6 +481,13 @@ async function addMatch(e) {
 
   const stadiumAddr = document.getElementById("stadiumAddress").value;
   const leagueLevel = parseInt(document.getElementById("leagueLevel").value);
+
+  // Falls direkt auf Speichern geklickt wird, die manuelle Stadionsuche abwarten.
+  if (stadiumAddr.trim() && stadiumAddr.trim() !== lastAutoFilledStadium && !currentVenueData) {
+    currentVenueData = await searchVenueByName(stadiumAddr.trim());
+    renderVenueInfo(currentVenueData);
+  }
+
   const coords = await geocodeAddress(stadiumAddr);
 
   if (!coords) {
@@ -404,6 +513,11 @@ async function addMatch(e) {
     away: awayTeam,
     homeLogo: homeLogo,
     awayLogo: awayLogo,
+    clubWebsite: currentHomeTeamData?.website || "",
+    homeTeamId: currentHomeTeamData?.idTeam || "",
+    stadiumVenueId: currentVenueData?.id || "",
+    stadiumCapacity: currentVenueData?.capacity || null,
+    stadiumSource: lastAutoFilledStadium && stadiumAddr.trim() === lastAutoFilledStadium ? "auto-team" : "manual",
     leagueLevel: leagueLevel,
     countryCode: coords.countryCode,
     leagueName: getLeagueName(coords.countryCode, leagueLevel),
@@ -453,6 +567,20 @@ function editMatch(matchId) {
   document.getElementById("matchDate").value = match.date || "";
   document.getElementById("matchTime").value = match.time || "";
   document.getElementById("stadiumAddress").value = match.stadium || "";
+  lastAutoFilledStadium = "";
+  currentHomeTeamData = {
+    idTeam: match.homeTeamId || "",
+    website: match.clubWebsite || "",
+    idVenue: match.stadiumVenueId || "",
+    stadium: match.stadium || ""
+  };
+  currentVenueData = match.stadiumVenueId || match.stadiumCapacity ? {
+    id: match.stadiumVenueId || "",
+    name: match.stadium || "",
+    capacity: match.stadiumCapacity || null,
+    source: match.stadiumSource || "manual"
+  } : null;
+  renderVenueInfo(currentVenueData);
   document.getElementById("customArrivalBuffer").value = match.customArrivalBuffer ?? "";
   document.getElementById("customDepartureBuffer").value = match.customDepartureBuffer ?? "";
   document.getElementById("mustAttend").checked = !!match.mustAttend;
@@ -479,7 +607,10 @@ function editMatch(matchId) {
 function resetMatchForm() {
   editingMatchId = null;
   document.getElementById("matchForm").reset();
-  autoStadiumValue = "";
+  lastAutoFilledStadium = "";
+  currentHomeTeamData = null;
+  currentVenueData = null;
+  renderVenueInfo(null);
   
   hideCrestPreview('home');
   hideCrestPreview('away');
@@ -569,13 +700,22 @@ function renderActiveTrip() {
   }
 }
 
+function websiteLinkHtml(m, className = "") {
+  if (!m.clubWebsite) return "";
+  return `<a class="club-website-link ${className}" href="${escapeHtml(m.clubWebsite)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>`;
+}
+
+function capacityHtml(m) {
+  return m.stadiumCapacity ? ` · ${Number(m.stadiumCapacity).toLocaleString("de-DE")} Plätze` : "";
+}
+
 function matchPopupHtml(m) {
   const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-    🏟️ <b>${escapeHtml(m.stadium)}</b>${fullAddress}<br>
-    📅 ${m.date} um ${m.time} Uhr`;
+    🏟️ <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
+    📅 ${m.date} um ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}`;
 }
 
 // Rendert die Match-Liste in der Sidebar mit Berücksichtigung der Alternativen (Dunkelgrün / Helles Grün)
@@ -628,7 +768,8 @@ function renderMatchList() {
       <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
       ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
-      📍 ${escapeHtml(m.stadium)}
+      📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}
+      ${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}
       ${reasonHtml}
       <div style="margin-top:0.4rem; display:flex; gap:0.4rem;">
         <button onclick="editMatch('${m.id}')" class="btn btn-small">Bearbeiten</button>
@@ -1350,7 +1491,7 @@ async function renderDayTiles(plan, trip) {
         </div>
         <div class="timeline-item match-item">
           <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
-          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
+          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
         </div>
       `;
 
