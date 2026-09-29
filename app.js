@@ -309,18 +309,33 @@ async function searchVenueByName(venueName) {
     const res = await fetch(url);
     const data = await res.json();
     if (!data || !Array.isArray(data.venues) || !data.venues.length) return null;
-    const wanted = venueName.trim().toLowerCase();
-    const soccerVenues = data.venues.filter(venue => {
-      const sport = String(venue.strSport || "").trim().toLowerCase();
-      return !sport || sport === "soccer";
-    });
-    const pool = soccerVenues.length ? soccerVenues : [];
-    const exact = pool.find(venue => {
+    const normalizeVenueName = value => String(value || "")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+    const wanted = normalizeVenueName(venueName);
+
+    // Anders als bei der Teamsuche nicht nach strSport filtern.
+    // Venue-Datensätze sind dort nicht immer einheitlich als "Soccer" klassifiziert.
+    const exact = data.venues.find(venue => {
       const names = [venue.strVenue, venue.strVenueAlternate, venue.strStadium]
-        .filter(Boolean).map(name => String(name).trim().toLowerCase());
+        .filter(Boolean)
+        .map(normalizeVenueName);
       return names.includes(wanted);
     });
-    const venue = exact || pool[0];
+
+    const partial = data.venues.find(venue => {
+      const names = [venue.strVenue, venue.strVenueAlternate, venue.strStadium]
+        .filter(Boolean)
+        .map(normalizeVenueName);
+      return names.some(name => name.includes(wanted) || wanted.includes(name));
+    });
+
+    const venue = exact || partial || data.venues[0];
     if (!venue) return null;
     return {
       id: venue.idVenue || "",
