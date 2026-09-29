@@ -143,3 +143,5 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
   text-decoration: none;
 }
 .club-website-link:hover { text-decoration: underline; }
+
+.groundhopper-score{display:inline-block;margin:.25rem 0;color:#7a5b00;background:#fff7d6;padding:.18rem .42rem;border-radius:4px;font-size:.8rem}.settings-divider{border:0;border-top:1px solid var(--border-color);margin:1rem 0}.settings-hint{font-size:.8rem;color:#6c757d;margin:.3rem 0 .7rem}.score-weight-grid{display:grid;grid-template-columns:1fr 1fr;gap:.65rem}.score-weight-grid label{display:flex;flex-direction:column;gap:.3rem;font-size:.85rem}.modal-content h3{color:var(--primary)}@media(max-width:520px){.score-weight-grid{grid-template-columns:1fr}}
