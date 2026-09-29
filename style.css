@@ -93,7 +93,24 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 .match-list-item { transition: background-color 0.2s ease; border-left: 4px solid transparent; }
 .match-list-item.status-selected { background: #d4edda; border-left-color: #28a745; }
 .match-list-item.status-dropped { background: #f1f3f5; border-left-color: #adb5bd; color: #868e96; }
+.match-list-item.status-alternative { background: #eaf7ee; border-left-color: var(--accent); }
+.match-list-item.status-alternative .alt-reason { color: var(--primary-hover); font-size: 0.8rem; margin-top: 0.3rem; }
 .must-badge { color: #d4a017; }
+
+/* Plan-Switcher (Trip-Alternativen) */
+.plan-switcher-wrap { margin-bottom: 1rem; }
+.plan-switcher { display: flex; align-items: center; gap: 0.75rem; background: #eef5f1; border: 1px solid var(--border-color); border-radius: 8px; padding: 0.6rem 0.9rem; }
+.plan-switcher-info { flex: 1; text-align: center; }
+.plan-description { font-size: 0.85rem; color: #495057; margin-top: 0.15rem; }
+.plan-stats { font-size: 0.8rem; color: #495057; margin-top: 0.3rem; }
+.plan-switcher-single { font-size: 0.85rem; color: #495057; }
+
+/* Tageskacheln */
+.day-tile { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 1.25rem; overflow: hidden; }
+.day-tile-header { display: flex; justify-content: space-between; align-items: center; background: #eef5f1; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-color); }
+.day-tile-header h3 { font-size: 1rem; color: var(--primary); }
+.day-tile-body { padding: 1rem; }
+.tile-changed-badge { font-size: 0.75rem; font-weight: 600; color: var(--primary-hover); background: #d4edda; padding: 0.2rem 0.5rem; border-radius: 4px; }
 
 /* Dropped matches */
 .dropped-section { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px dashed var(--border-color); }
