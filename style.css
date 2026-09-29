@@ -127,23 +127,19 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 }
 
 
-/* Automatisch geladene TheSportsDB-Daten */
-.team-data-panel {
-  margin: -0.25rem 0 0.75rem;
-  padding: 0.65rem 0.75rem;
-  background: #eef5f1;
-  border: 1px solid #cfe3d8;
+/* TheSportsDB Stadion- und Ticketinformationen */
+.venue-info {
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.6rem;
   border-radius: 6px;
-  font-size: 0.83rem;
-  line-height: 1.55;
+  background: #eef5f1;
+  color: #315847;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
-.ticket-link {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 0.3rem;
-  color: var(--primary);
+.club-website-link {
+  color: #0b6b4b;
   font-weight: 600;
   text-decoration: none;
 }
-.ticket-link:hover { text-decoration: underline; }
-.field-hint { color: #6c757d; font-size: 0.76rem; line-height: 1.35; }
+.club-website-link:hover { text-decoration: underline; }
