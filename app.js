@@ -1,13 +1,3 @@
-Der Fehler lag an zwei Stellen im JavaScript-Ablauf:
-
-1. **Absturz bei Übernachtungsberechnung (`null`-Reference)**: Wenn die OSRM-Routenschnittstelle für einen Streckenabschnitt keine Unterpunkte zurückgab, blieb der vorgeschlagene Übernachtungspunkt `null`. Dadurch brach das Rendern der Tages-Kacheln und der Alternativen-Auswahl silently mit einem `TypeError` ab.
-2. **Startpunkt & Array-Sicherheitsprüfungen**: Fehlten defensive Prüfungen beim Startpunkt oder bei leeren Tagesketten, wurde der Aufbau der Tageskacheln gestoppt.
-
-Hier ist die korrigierte und abgesicherte `app.js`. Ersetze deinen bisherigen Code damit – alle Alternativen und Tages-Container werden nun zuverlässig gerendert:
-
-### `app.js` (vollständig korrigiert)
-
-```javascript
 let state = {
   activeTripId: null,
   settings: {
@@ -25,15 +15,15 @@ let state = {
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
 let editingMatchId = null;
-let lastSelectedMatchIds = null;
+let lastSelectedMatchIds = null; // Speichert die IDs der aktuell berechneten Spiele
 
 // ---------- Trip-Alternativen ----------
-let currentPlans = null;     
-let currentPlanIndex = 0;    
+let currentPlans = null;     // Array der aktuell berechneten Plan-Alternativen für den Trip
+let currentPlanIndex = 0;    // Index des gerade angezeigten Plans in currentPlans
 
-const MAX_DAY_ALTERNATIVES = 3;
-const BEAM_WIDTH = 6;           
-const MAX_PLANS = 4;            
+const MAX_DAY_ALTERNATIVES = 3; // Wie viele Ketten-Varianten pro Tag als Zweige verfolgt werden
+const BEAM_WIDTH = 6;           // Wie viele Trip-Kandidaten zwischen den Tagen mitgeführt werden
+const MAX_PLANS = 4;            // Wie viele Alternativen dem Nutzer am Ende angezeigt werden
 
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
@@ -69,8 +59,11 @@ document.addEventListener("DOMContentLoaded", () => {
     renderActiveTrip();
   }
 
+  // Event Listener für automatische Wappen-Suche bei Blur
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
+
+  // Manuelle URL-Änderung in der Vorschau spiegeln
   document.getElementById("homeLogo").addEventListener("input", () => updateCrestPreview('home'));
   document.getElementById("awayLogo").addEventListener("input", () => updateCrestPreview('away'));
 });
@@ -113,9 +106,7 @@ function createNewTrip(defaultName = null) {
     startAddress: null,
     matches: [],
     overnightOverrides: {},
-    calculatedPlans: null,
-    selectedPlanIndex: 0,
-    selectedPlanSignature: null
+    plans: null
   };
 
   state.trips.push(newTrip);
@@ -168,7 +159,7 @@ function renderTripSelect() {
   ).join('');
 }
 
-// ---------- Geocoding ----------
+// ---------- Geocoding (Nominatim) ----------
 async function geocodeAddress(address) {
   if (!address || !address.trim()) return null;
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(address)}`;
@@ -188,6 +179,7 @@ async function geocodeAddress(address) {
       const cityStr = [postcode, city].filter(Boolean).join(" ");
 
       const country = addr.country || "";
+
       const formattedAddress = [streetStr, cityStr, country].filter(Boolean).join(", ");
 
       return {
@@ -216,7 +208,7 @@ async function reverseGeocode(lat, lng, zoom = 10) {
   }
 }
 
-// ---------- Wappen-Suche ----------
+// ---------- Iterative Wappen-Suche ----------
 function generateSearchCandidates(inputName) {
   const trimmed = inputName.trim();
   if (!trimmed) return [];
@@ -334,7 +326,6 @@ async function setStartAddress() {
   if (coords) {
     const trip = getActiveTrip();
     trip.startAddress = { address, lat: coords.lat, lng: coords.lng, countryCode: coords.countryCode };
-    trip.calculatedPlans = null;
     saveLocalStorage();
     statusEl.innerText = "✓ Gespeichert!";
     renderActiveTrip();
@@ -399,7 +390,10 @@ async function addMatch(e) {
     trip.matches.push(matchData);
   }
 
-  trip.calculatedPlans = null;
+  // Bei Änderung des Spielplans alte Alternativen verwerfen
+  delete trip.plans;
+  currentPlans = null;
+
   saveLocalStorage();
   resetMatchForm();
   renderActiveTrip();
@@ -426,11 +420,17 @@ function editMatch(matchId) {
   document.getElementById("customDepartureBuffer").value = match.customDepartureBuffer ?? "";
   document.getElementById("mustAttend").checked = !!match.mustAttend;
 
-  if (match.homeLogo) showCrestPreview('home', match.homeLogo);
-  else autoFetchCrest('home');
+  if (match.homeLogo) {
+    showCrestPreview('home', match.homeLogo);
+  } else {
+    autoFetchCrest('home');
+  }
 
-  if (match.awayLogo) showCrestPreview('away', match.awayLogo);
-  else autoFetchCrest('away');
+  if (match.awayLogo) {
+    showCrestPreview('away', match.awayLogo);
+  } else {
+    autoFetchCrest('away');
+  }
 
   const submitBtn = document.querySelector("#matchForm button[type='submit']");
   if (submitBtn) submitBtn.textContent = "Spiel speichern";
@@ -462,7 +462,10 @@ function deleteMatch(matchId) {
   const trip = getActiveTrip();
   trip.matches = trip.matches.filter(m => m.id !== matchId);
   delete trip.overnightOverrides[matchId];
-  trip.calculatedPlans = null;
+  
+  delete trip.plans;
+  currentPlans = null;
+
   saveLocalStorage();
   renderActiveTrip();
 }
@@ -489,7 +492,6 @@ function createCrestIcon(home, away, homeLogo, awayLogo) {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
   const div = document.createElement('div');
   div.innerText = str;
   return div.innerHTML;
@@ -503,22 +505,22 @@ function renderActiveTrip() {
   document.getElementById("matchCount").innerText = trip.matches.length;
   document.getElementById("startAddress").value = trip.startAddress ? trip.startAddress.address : "";
 
-  if (trip.calculatedPlans && trip.calculatedPlans.length > 0) {
-    currentPlans = trip.calculatedPlans;
-    currentPlanIndex = trip.selectedPlanIndex || 0;
-
+  // Falls gespeicherte Alternativen im Trip vorhanden sind (aus Storage oder Import), diese wiederherstellen
+  if (trip.plans && trip.plans.length > 0) {
+    currentPlans = trip.plans;
+    let idx = 0;
     if (trip.selectedPlanSignature) {
       const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
-      if (found !== -1) currentPlanIndex = found;
+      if (found !== -1) idx = found;
     }
-
+    currentPlanIndex = idx;
     renderCurrentPlan();
   } else {
     currentPlans = null;
     currentPlanIndex = 0;
     lastSelectedMatchIds = null;
 
-    renderMatchList(null, null, null);
+    renderMatchList();
     updateMapMarkers();
 
     document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
@@ -538,29 +540,51 @@ function matchPopupHtml(m) {
     📅 ${m.date} um ${m.time} Uhr`;
 }
 
-function renderMatchList(selectedIds, droppedReasons, altPlanNumbers) {
+// Rendert die Match-Liste in der Sidebar mit Berücksichtigung der Alternativen (Dunkelgrün / Helles Grün)
+function renderMatchList() {
   const trip = getActiveTrip();
-  if (!trip) return;
   const matchList = document.getElementById("matchList");
+  if (!trip || !matchList) return;
+
+  const totalPlans = currentPlans ? currentPlans.length : 0;
+  const activePlan = (currentPlans && currentPlans[currentPlanIndex]) ? currentPlans[currentPlanIndex] : null;
+
+  const droppedReasons = activePlan
+    ? new Map(activePlan.dropped.map(d => [d.match.id, d.reason]))
+    : new Map();
+
   matchList.innerHTML = trip.matches
     .slice()
     .sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`))
     .map(m => {
       let statusClass = "";
       let reasonHtml = "";
-      if (selectedIds) {
-        if (selectedIds.has(m.id)) {
+
+      if (totalPlans > 0) {
+        const plansWithMatch = [];
+        currentPlans.forEach((p, idx) => {
+          if (p.selected.some(sm => sm.id === m.id)) {
+            plansWithMatch.push(idx + 1);
+          }
+        });
+
+        if (plansWithMatch.length === totalPlans) {
+          // In JEDER Alternative enthalten -> Dunkelgrün
           statusClass = "status-selected";
-        } else if (altPlanNumbers && altPlanNumbers.has(m.id)) {
+          reasonHtml = `<div class="reason alt-reason" style="color:#1b4332; font-weight:600;">In allen Alternativen enthalten</div>`;
+        } else if (plansWithMatch.length > 0) {
+          // Nur in EINZELNEN Alternativen enthalten -> Helles Grün
           statusClass = "status-alternative";
-          const plans = altPlanNumbers.get(m.id);
-          reasonHtml = `<div class="reason alt-reason">In Alternative ${plans.join(', ')} enthalten</div>`;
+          const isCurrent = plansWithMatch.includes(currentPlanIndex + 1);
+          reasonHtml = `<div class="reason alt-reason">In Alternative ${plansWithMatch.join(', ')} enthalten${isCurrent ? ' (in aktiver Ansicht)' : ''}</div>`;
         } else {
+          // In KEINER Alternative enthalten -> Aussortiert
           statusClass = "status-dropped";
-          const reason = droppedReasons ? droppedReasons.get(m.id) : null;
-          if (reason) reasonHtml = `<div class="reason" style="text-decoration:none;">${escapeHtml(reason)}</div>`;
+          const reason = droppedReasons.get(m.id) || "In keiner Alternative enthalten.";
+          reasonHtml = `<div class="reason" style="text-decoration:none;">${escapeHtml(reason)}</div>`;
         }
       }
+
       return `
     <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
       <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
@@ -607,7 +631,7 @@ async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
 }
 
 function findPointAtTime(steps, targetSec) {
-  if (!steps || !Array.isArray(steps) || steps.length === 0) return null;
+  if (!steps || steps.length === 0) return null;
   let cumulative = 0;
   for (const step of steps) {
     if (cumulative + step.duration >= targetSec) {
@@ -618,19 +642,14 @@ function findPointAtTime(steps, targetSec) {
         const [lng, lat] = coords[idx];
         return { lat, lng };
       }
-      if (step.maneuver && step.maneuver.location) {
-        const [lng, lat] = step.maneuver.location;
-        return { lat, lng };
-      }
+      const [lng, lat] = step.maneuver.location;
+      return { lat, lng };
     }
     cumulative += step.duration;
   }
   const last = steps[steps.length - 1];
-  if (last && last.maneuver && last.maneuver.location) {
-    const [lng, lat] = last.maneuver.location;
-    return { lat, lng };
-  }
-  return null;
+  const [lng, lat] = last.maneuver.location;
+  return { lat, lng };
 }
 
 function generateGoogleDeeplink(originLat, originLng, destLat, destLng) {
@@ -834,7 +853,7 @@ async function planOvernight(prevMatch, nextMatch) {
   }
 
   let overnightPoint = null;
-  if (result.eveningDriveMin > 1 && osrm.steps) {
+  if (result.eveningDriveMin > 1) {
     const targetSec = result.eveningDriveMin * 60;
     const coord = findPointAtTime(osrm.steps, targetSec);
     if (coord) {
@@ -845,15 +864,8 @@ async function planOvernight(prevMatch, nextMatch) {
         suggestedName: placeName || `Ungefähr ${coord.lat.toFixed(3)}, ${coord.lng.toFixed(3)}`
       };
     }
-  }
-
-  // Fallback, wenn kein konkreter Punkt ermittelt werden konnte
-  if (!overnightPoint) {
-    overnightPoint = {
-      lat: prevMatch.lat,
-      lng: prevMatch.lng,
-      suggestedName: prevMatch.stadium
-    };
+  } else {
+    overnightPoint = { lat: prevMatch.lat, lng: prevMatch.lng, suggestedName: prevMatch.stadium };
   }
 
   return {
@@ -889,7 +901,6 @@ function clearOvernightOverride(matchId) {
 
 // ---------- Tages-Alternativen erzeugen ----------
 function dayChainSignature(chain) {
-  if (!chain || !Array.isArray(chain)) return '';
   return chain.map(m => m.id).sort().join(',');
 }
 
@@ -957,8 +968,8 @@ function finalizePlanState(beamState, trip) {
   const selected = [];
   const dropped = [];
   beamState.dayChains.forEach(dc => {
-    if (dc.chain) selected.push(...dc.chain);
-    if (dc.dropped) dropped.push(...dc.dropped);
+    selected.push(...dc.chain);
+    dropped.push(...dc.dropped);
   });
   const mustAttendTotal = trip.matches.filter(m => m.mustAttend).length;
   const signature = beamState.dayChains.map(dc => dayChainSignature(dc.chain)).join('|');
@@ -1038,7 +1049,7 @@ function diffDescription(basePlan, plan) {
   return parts.join(' · ') || 'Gleiche Spiele, andere Reihenfolge/Route.';
 }
 
-// ---------- Trip Optimierung ----------
+// ---------- Gesamten Trip optimieren & Alternativen berechnen ----------
 async function buildOptimizedScheduleAlternatives(trip) {
   const byDate = new Map();
   trip.matches.forEach(m => {
@@ -1046,8 +1057,6 @@ async function buildOptimizedScheduleAlternatives(trip) {
     byDate.get(m.date).push(m);
   });
   const dates = [...byDate.keys()].sort();
-  if (dates.length === 0) return [];
-
   dates.forEach(d => byDate.get(d).sort((a, b) => a.time.localeCompare(b.time)));
 
   let beam = [{
@@ -1097,9 +1106,8 @@ async function buildOptimizedScheduleAlternatives(trip) {
               nextLoc = { lat: override.lat, lng: override.lng };
               overnight = { fromMatchId: lastOfDay.id, override: true, lat: override.lat, lng: override.lng, name: override.address };
             } else {
-              const op = plan.overnightPoint || { lat: lastOfDay.lat, lng: lastOfDay.lng, suggestedName: lastOfDay.stadium };
-              nextLoc = { lat: op.lat, lng: op.lng };
-              overnight = { fromMatchId: lastOfDay.id, override: false, lat: op.lat, lng: op.lng, name: op.suggestedName };
+              nextLoc = { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng };
+              overnight = { fromMatchId: lastOfDay.id, override: false, lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng, name: plan.overnightPoint.suggestedName };
             }
           }
           nextTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
@@ -1166,35 +1174,28 @@ async function calculateRoute() {
   routeLayer.clearLayers();
   travelCache.clear();
 
-  try {
-    currentPlans = await buildOptimizedScheduleAlternatives(trip);
+  currentPlans = await buildOptimizedScheduleAlternatives(trip);
 
-    if (!currentPlans || currentPlans.length === 0) {
-      timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
-      lastSelectedMatchIds = new Set();
-      trip.calculatedPlans = null;
-      saveLocalStorage();
-      updateMapMarkers();
-      return;
-    }
-
-    let idx = 0;
-    if (trip.selectedPlanSignature) {
-      const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
-      if (found !== -1) idx = found;
-    }
-    currentPlanIndex = idx;
-    trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
-    trip.selectedPlanIndex = currentPlanIndex;
-    trip.calculatedPlans = currentPlans;
-
-    saveLocalStorage();
-
-    await renderCurrentPlan();
-  } catch (err) {
-    console.error("Fehler bei der Berechnung:", err);
-    timelineEl.innerHTML = `<p class="placeholder-text" style="color:red;">Fehler bei der Berechnung: ${escapeHtml(err.message)}</p>`;
+  if (!currentPlans || currentPlans.length === 0) {
+    timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
+    lastSelectedMatchIds = new Set();
+    updateMapMarkers();
+    return;
   }
+
+  // Alternativen auch im Trip-Objekt ablegen
+  trip.plans = currentPlans;
+
+  let idx = 0;
+  if (trip.selectedPlanSignature) {
+    const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
+    if (found !== -1) idx = found;
+  }
+  currentPlanIndex = idx;
+  trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
+  saveLocalStorage();
+
+  await renderCurrentPlan();
 }
 
 function choosePlan(delta) {
@@ -1204,7 +1205,6 @@ function choosePlan(delta) {
   const trip = getActiveTrip();
   if (trip) {
     trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
-    trip.selectedPlanIndex = currentPlanIndex;
     saveLocalStorage();
   }
 
@@ -1220,7 +1220,7 @@ async function renderCurrentPlan() {
   updateMapMarkers();
 
   renderPlanSwitcher(plan);
-  renderSidebarWithAlternatives(plan);
+  renderMatchList();
   await renderDayTiles(plan, trip);
 }
 
@@ -1260,102 +1260,76 @@ function planStatsHtml(plan) {
   return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel} · 🚗 ca. ${travelStr}${nightWarn}</div>`;
 }
 
-function renderSidebarWithAlternatives(plan) {
-  const selectedIds = new Set(plan.selected.map(m => m.id));
-  const droppedReasons = new Map(plan.dropped.map(d => [d.match.id, d.reason]));
-
-  const altPlanNumbers = new Map();
-  if (currentPlans && currentPlans.length > 1) {
-    currentPlans.forEach((p, i) => {
-      if (i === currentPlanIndex) return;
-      p.selected.forEach(m => {
-        if (selectedIds.has(m.id)) return;
-        if (!altPlanNumbers.has(m.id)) altPlanNumbers.set(m.id, []);
-        altPlanNumbers.get(m.id).push(i + 1);
-      });
-    });
-  }
-
-  renderMatchList(selectedIds, droppedReasons, altPlanNumbers);
-}
-
 async function renderDayTiles(plan, trip) {
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
   routeLayer.clearLayers();
 
-  let currentLoc = (trip.startAddress && trip.startAddress.lat != null)
-    ? { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address }
-    : { lat: 0, lng: 0, name: "Start" };
-
+  let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
   let html = "";
   const allDropped = [];
 
-  const changedSet = Array.isArray(plan.changedDates) ? new Set(plan.changedDates) : (plan.changedDates instanceof Set ? plan.changedDates : new Set());
-
   for (let d = 0; d < plan.dayChains.length; d++) {
     const dc = plan.dayChains[d];
-    if (dc.dropped && Array.isArray(dc.dropped)) {
-      allDropped.push(...dc.dropped);
-    }
+    allDropped.push(...dc.dropped);
 
     const dateLabel = formatDateLong(dc.date);
-    const isChanged = currentPlanIndex !== 0 && changedSet.has(dc.date);
+    const isChanged = currentPlanIndex !== 0 && plan.changedDates && (
+      Array.isArray(plan.changedDates) ? plan.changedDates.includes(dc.date) : plan.changedDates.has(dc.date)
+    );
     const changedBadge = isChanged
       ? '<span class="tile-changed-badge" title="Unterscheidet sich von Alternative 1">◆ geändert</span>'
       : '';
 
     let tileBody = "";
 
-    if (!dc.chain || dc.chain.length === 0) {
-      tileBody = '<p class="placeholder-text">Kein Spiel für diesen Tag eingeplant.</p>';
-    } else {
-      for (let i = 0; i < dc.chain.length; i++) {
-        const match = dc.chain[i];
-        const osrm = await getOSRMRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+    if (dc.chain.length === 0) {
+      tileBody = '<p class="placeholder-text">Kein Spiel eingeplant.</p>';
+    }
 
-        if (osrm.geometry) {
-          L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
-        }
+    for (let i = 0; i < dc.chain.length; i++) {
+      const match = dc.chain[i];
+      const osrm = await getOSRMRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
 
-        const kickOff = new Date(`${match.date}T${match.time}`);
-        const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
-        const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
-        const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
-        const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
-        const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
-
-        tileBody += `
-          <div class="timeline-item">
-            <strong>🚗 Fahrt nach ${escapeHtml(match.stadium)}</strong><br>
-            Abfahrt: ${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
-            Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
-            <br>
-            <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
-          </div>
-          <div class="timeline-item match-item">
-            <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
-            ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
-          </div>
-        `;
-
-        currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
+      if (osrm.geometry) {
+        L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
       }
+
+      const kickOff = new Date(`${match.date}T${match.time}`);
+      const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+      const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
+      const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
+      const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+      const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
+
+      tileBody += `
+        <div class="timeline-item">
+          <strong>🚗 Fahrt nach ${escapeHtml(match.stadium)}</strong><br>
+          Abfahrt: ${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
+          Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
+          <br>
+          <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
+        </div>
+        <div class="timeline-item match-item">
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
+          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}
+        </div>
+      `;
+
+      currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
     }
 
     const nextDc = plan.dayChains[d + 1];
-    if (nextDc && dc.chain && dc.chain.length > 0) {
+    if (nextDc && dc.chain.length > 0) {
       const lastMatch = dc.chain[dc.chain.length - 1];
-      const nextMatchGuess = (nextDc.chain && nextDc.chain.length > 0) ? nextDc.chain[0] : null;
+      const nextMatchGuess = nextDc.chain.length > 0 ? nextDc.chain[0] : null;
 
       if (nextMatchGuess) {
         const override = trip.overnightOverrides[lastMatch.id];
         const opPlan = await planOvernight(lastMatch, nextMatchGuess);
         const overnightLoc = override
           ? { lat: override.lat, lng: override.lng, name: override.address }
-          : (opPlan.overnightPoint
-              ? { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName }
-              : { lat: lastMatch.lat, lng: lastMatch.lng, name: lastMatch.stadium });
+          : { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName };
 
         let warningHtml = "";
         if (!opPlan.feasible) {
@@ -1450,15 +1424,13 @@ function saveSettings() {
   state.settings.nextDayStartHour = document.getElementById("settingNextDayStart").value;
   state.settings.maxExtraNightDriveMin = parseInt(document.getElementById("settingMaxExtraNightDrive").value);
 
-  const trip = getActiveTrip();
-  if (trip) trip.calculatedPlans = null;
-
   saveLocalStorage();
   toggleSettingsModal();
-  renderActiveTrip();
 }
 
 // ---------- Export & Import ----------
+
+// 1. Aktiven Trip inkl. aller Trip-Alternativen als JSON-Datei herunterladen
 function exportActiveTrip() {
   const trip = getActiveTrip();
   if (!trip) {
@@ -1466,12 +1438,9 @@ function exportActiveTrip() {
     return;
   }
 
-  if (currentPlans) {
-    trip.calculatedPlans = currentPlans;
-    trip.selectedPlanIndex = currentPlanIndex;
-    if (currentPlans[currentPlanIndex]) {
-      trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
-    }
+  // Aktuell berechnete Alternativen am Trip verankern
+  if (currentPlans && currentPlans.length > 0) {
+    trip.plans = currentPlans;
   }
 
   const exportData = {
@@ -1493,11 +1462,13 @@ function exportActiveTrip() {
   downloadAnchor.remove();
 }
 
+// 2. Datei-Auswahldialog öffnen
 function triggerImportTrip() {
   const fileInput = document.getElementById("importTripInput");
   if (fileInput) fileInput.click();
 }
 
+// 3. JSON-Datei einlesen und Trip inkl. Alternativen importieren
 function importTrip(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -1513,8 +1484,13 @@ function importTrip(event) {
         return;
       }
 
+      // Neue eindeutige ID vergeben (verhindert Überschreiben)
       importedTrip.id = "trip_" + Date.now();
       importedTrip.name = importedTrip.name + " (Importiert)";
+
+      if (!importedTrip.plans && importedData.plans) {
+        importedTrip.plans = importedData.plans;
+      }
 
       state.trips.push(importedTrip);
       state.activeTripId = importedTrip.id;
@@ -1580,5 +1556,3 @@ function updateMapMarkers() {
     });
   });
 }
-
-```
