@@ -7,7 +7,8 @@ let state = {
     stoppageTimeMin: 10,
     maxNightDriveTime: "22:00",
     nextDayStartHour: "08:00",
-    maxExtraNightDriveMin: 120
+    maxExtraNightDriveMin: 120,
+    groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
   },
   trips: []
 };
@@ -65,6 +66,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Event Listener für automatische Wappen-Suche bei Blur
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
+  document.getElementById("competitionType").addEventListener("change", updateCompetitionFields);
+  updateCompetitionFields();
 
   // Eine manuelle Stadionänderung entkoppelt das Stadion vom Heimverein.
   document.getElementById("stadiumAddress").addEventListener("input", (event) => {
@@ -488,6 +491,49 @@ async function setStartAddress() {
   }
 }
 
+function isCupCompetition(type) { return type === "national_cup" || type === "international_cup"; }
+function updateCompetitionFields() {
+  const type = document.getElementById("competitionType")?.value || "league";
+  const leagueGroup = document.getElementById("leagueLevelGroup");
+  const cupGroup = document.getElementById("cupStageGroup");
+  if (leagueGroup) leagueGroup.style.display = type === "league" ? "flex" : "none";
+  if (cupGroup) cupGroup.style.display = isCupCompetition(type) ? "flex" : "none";
+  const league = document.getElementById("leagueLevel");
+  const stage = document.getElementById("cupStage");
+  if (league) league.required = type === "league";
+  if (stage) stage.required = isCupCompetition(type);
+}
+function competitionLabel(type) {
+  return ({league:"Liga",national_cup:"Pokal national",international_cup:"Pokal international",friendly:"Freundschaftsspiel",other:"Sonstiges"})[type || "league"] || "Liga";
+}
+function cupStageLabel(stage) {
+  return ({final:"Finale",semifinal:"Halbfinale",knockout:"KO-Runde",group:"Gruppenphase",qualification:"Qualifikationsphase"})[stage] || "";
+}
+function normalizedWeights() {
+  const w = state.settings.groundhopperWeights || { highlight:40, stage:30, competition:20, stadium:10 };
+  const values = { highlight:+w.highlight||0, stage:+w.stage||0, competition:+w.competition||0, stadium:+w.stadium||0 };
+  const sum = Object.values(values).reduce((a,b)=>a+b,0) || 1;
+  return Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v/sum]));
+}
+function matchScoreDetails(m) {
+  const type=m.competitionType||"league", w=normalizedWeights();
+  const highlight=m.mustAttend?100:0;
+  const stage=type==="league" ? ({1:100,2:83,3:67,4:50,5:33,6:17}[m.leagueLevel]||0)
+    : isCupCompetition(type) ? ({final:100,semifinal:80,knockout:60,group:40,qualification:20}[m.cupStage]||0) : 0;
+  const competition=({international_cup:100,national_cup:75,league:50,other:25,friendly:10})[type]||0;
+  const c=Number(m.stadiumCapacity)||0;
+  const stadium=c>=60000?100:c>=40000?80:c>=20000?60:c>=10000?40:c>=5000?20:c>0?10:0;
+  const score=Math.round(highlight*w.highlight+stage*w.stage+competition*w.competition+stadium*w.stadium);
+  return {score,highlight,stage,competition,stadium};
+}
+function scoreHtml(m) { const d=matchScoreDetails(m); return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Wettbewerb/Phase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">🏆 Groundhopper Score: <strong>${d.score}/100</strong></span>`; }
+function matchContextLabel(m) {
+  const type=m.competitionType||"league";
+  if(type==="league") return `${escapeHtml(m.leagueName||getLeagueName(m.countryCode,m.leagueLevel))} · Liga`;
+  if(isCupCompetition(type)) return `${competitionLabel(type)}${m.cupStage?` · ${cupStageLabel(m.cupStage)}`:""}`;
+  return competitionLabel(type);
+}
+
 // ---------- Match Handling ----------
 async function addMatch(e) {
   e.preventDefault();
@@ -495,7 +541,9 @@ async function addMatch(e) {
   if (!trip) return;
 
   const stadiumAddr = document.getElementById("stadiumAddress").value;
-  const leagueLevel = parseInt(document.getElementById("leagueLevel").value);
+  const competitionType = document.getElementById("competitionType").value || "league";
+  const leagueLevel = competitionType === "league" ? parseInt(document.getElementById("leagueLevel").value) : null;
+  const cupStage = isCupCompetition(competitionType) ? document.getElementById("cupStage").value : null;
 
   // Falls direkt auf Speichern geklickt wird, die manuelle Stadionsuche abwarten.
   if (stadiumAddr.trim() && stadiumAddr.trim() !== lastAutoFilledStadium && !currentVenueData) {
@@ -533,9 +581,11 @@ async function addMatch(e) {
     stadiumVenueId: currentVenueData?.id || "",
     stadiumCapacity: currentVenueData?.capacity || null,
     stadiumSource: lastAutoFilledStadium && stadiumAddr.trim() === lastAutoFilledStadium ? "auto-team" : "manual",
+    competitionType,
+    cupStage,
     leagueLevel: leagueLevel,
     countryCode: coords.countryCode,
-    leagueName: getLeagueName(coords.countryCode, leagueLevel),
+    leagueName: competitionType === "league" ? getLeagueName(coords.countryCode, leagueLevel) : null,
     date: document.getElementById("matchDate").value,
     time: document.getElementById("matchTime").value,
     stadium: stadiumAddr,
@@ -578,7 +628,10 @@ function editMatch(matchId) {
   document.getElementById("awayTeam").value = match.away || "";
   document.getElementById("homeLogo").value = match.homeLogo || "";
   document.getElementById("awayLogo").value = match.awayLogo || "";
+  document.getElementById("competitionType").value = match.competitionType || "league";
   document.getElementById("leagueLevel").value = match.leagueLevel || 1;
+  document.getElementById("cupStage").value = match.cupStage || "knockout";
+  updateCompetitionFields();
   document.getElementById("matchDate").value = match.date || "";
   document.getElementById("matchTime").value = match.time || "";
   document.getElementById("stadiumAddress").value = match.stadium || "";
@@ -622,6 +675,8 @@ function editMatch(matchId) {
 function resetMatchForm() {
   editingMatchId = null;
   document.getElementById("matchForm").reset();
+  document.getElementById("competitionType").value = "league";
+  updateCompetitionFields();
   lastAutoFilledStadium = "";
   currentHomeTeamData = null;
   currentVenueData = null;
@@ -728,7 +783,7 @@ function matchPopupHtml(m) {
   const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
-    ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
+    ${matchContextLabel(m)}<br>${scoreHtml(m)}<br>
     🏟️ <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
     📅 ${m.date} um ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}`;
 }
@@ -781,7 +836,7 @@ function renderMatchList() {
       return `
     <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
       <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
-      ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
+      ${matchContextLabel(m)}<br>${scoreHtml(m)}<br>
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
       📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}
       ${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}
@@ -1505,7 +1560,7 @@ async function renderDayTiles(plan, trip) {
           <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
         </div>
         <div class="timeline-item match-item">
-          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${escapeHtml(leagueLabel)})<br>
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${matchContextLabel(match)})<br>${scoreHtml(match)}<br>
           ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
         </div>
       `;
@@ -1606,6 +1661,11 @@ function toggleSettingsModal() {
   document.getElementById("settingMaxNightDrive").value = state.settings.maxNightDriveTime;
   document.getElementById("settingNextDayStart").value = state.settings.nextDayStartHour;
   document.getElementById("settingMaxExtraNightDrive").value = state.settings.maxExtraNightDriveMin;
+  const weights=state.settings.groundhopperWeights||{highlight:40,stage:30,competition:20,stadium:10};
+  document.getElementById("weightHighlight").value=weights.highlight;
+  document.getElementById("weightStage").value=weights.stage;
+  document.getElementById("weightCompetition").value=weights.competition;
+  document.getElementById("weightStadium").value=weights.stadium;
   modal.style.display = "flex";
 }
 
@@ -1617,6 +1677,7 @@ function saveSettings() {
   state.settings.maxNightDriveTime = document.getElementById("settingMaxNightDrive").value;
   state.settings.nextDayStartHour = document.getElementById("settingNextDayStart").value;
   state.settings.maxExtraNightDriveMin = parseInt(document.getElementById("settingMaxExtraNightDrive").value);
+  state.settings.groundhopperWeights={highlight:parseFloat(document.getElementById("weightHighlight").value)||0,stage:parseFloat(document.getElementById("weightStage").value)||0,competition:parseFloat(document.getElementById("weightCompetition").value)||0,stadium:parseFloat(document.getElementById("weightStadium").value)||0};
 
   saveLocalStorage();
   toggleSettingsModal();
