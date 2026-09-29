@@ -74,13 +74,6 @@
             </div>
           </div>
           
-          <!-- Von TheSportsDB automatisch ermittelte Vereinsdaten -->
-          <div id="homeTeamData" class="team-data-panel" style="display:none;">
-            <div><strong>Heimstadion:</strong> <span id="homeStadiumInfo">–</span></div>
-            <div><strong>Kapazität:</strong> <span id="homeCapacityInfo">–</span></div>
-            <a id="homeWebsiteLink" class="ticket-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">🎟️ Vereinswebsite / Tickets</a>
-          </div>
-
           <!-- Liga Level -->
           <div class="form-group" style="margin-bottom: 0.75rem;">
             <label for="leagueLevel">Liga Level *</label>
@@ -92,16 +85,6 @@
               <option value="4">Level 4 (z.B. Regionalliga)</option>
               <option value="5">Level 5 (z.B. Oberliga)</option>
               <option value="6">Level 6 oder niedriger</option>
-            </select>
-          </div>
-
-          <!-- Wettbewerb -->
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="competitionType">Wettbewerb *</label>
-            <select id="competitionType" required style="width: 100%; margin-top: 0.25rem;">
-              <option value="league">Liga</option>
-              <option value="national_cup">Pokal national</option>
-              <option value="international_cup">Pokal international</option>
             </select>
           </div>
 
@@ -121,7 +104,7 @@
           <div class="form-group" style="margin-bottom: 0.75rem;">
             <label for="stadiumAddress">Stadion / Adresse *</label>
             <input type="text" id="stadiumAddress" placeholder="Stadion / Adresse *" required style="width: 100%; margin-top: 0.25rem;" />
-            <small id="stadiumAutoHint" class="field-hint"></small>
+            <div id="venueInfo" class="venue-info" style="display:none;"></div>
           </div>
 
           <!-- Weitere Optionen -->
