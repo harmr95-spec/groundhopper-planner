@@ -98,10 +98,18 @@ function initMap() {
 
 // ---------- LocalStorage ----------
 function loadLocalStorage() {
-  const data = localStorage.getItem("groundhopping_data");
-  if (data) {
-    const parsed = JSON.parse(data);
+  const raw = localStorage.getItem("groundhopping_data");
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.trips) || parsed.trips.some(t => !t || !Array.isArray(t.matches))) {
+      throw new Error("Unerwartetes Datenformat");
+    }
     state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
+  } catch (err) {
+    console.error("Gespeicherte Daten unlesbar:", err);
+    try { localStorage.setItem("groundhopping_data_backup_" + Date.now(), raw); } catch (e) { /* Speicher voll */ }
+    alert("Die gespeicherten Daten waren beschädigt. Eine Sicherung liegt im Browser-Speicher (groundhopping_data_backup_…). Die App startet mit leeren Daten.");
   }
 }
 
@@ -706,15 +714,15 @@ function deleteMatch(matchId) {
 
 // ---------- Crest Marker ----------
 function createCrestIcon(home, away, homeLogo, awayLogo) {
-  const cleanHomeLogo = homeLogo ? homeLogo.replace(/\\/g, '') : '';
-  const cleanAwayLogo = awayLogo ? awayLogo.replace(/\\/g, '') : '';
+  const cleanHomeLogo = safeHttpUrl(homeLogo);
+  const cleanAwayLogo = safeHttpUrl(awayLogo);
 
   const homeContent = cleanHomeLogo
-    ? `<img src="${cleanHomeLogo}" alt="${escapeHtml(home)}"/>`
+    ? `<img src="${escapeHtml(cleanHomeLogo)}" alt="${escapeHtml(home)}"/>`
     : `<span class="badge">${escapeHtml(home.substring(0, 3).toUpperCase())}</span>`;
 
   const awayContent = cleanAwayLogo
-    ? `<img src="${cleanAwayLogo}" alt="${escapeHtml(away)}"/>`
+    ? `<img src="${escapeHtml(cleanAwayLogo)}" alt="${escapeHtml(away)}"/>`
     : `<span class="badge">${escapeHtml(away.substring(0, 3).toUpperCase())}</span>`;
 
   return L.divIcon({
@@ -725,10 +733,151 @@ function createCrestIcon(home, away, homeLogo, awayLogo) {
   });
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.innerText = str;
-  return div.innerHTML;
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+function safeHttpUrl(value) {
+  const cleaned = String(value ?? "").trim().replace(/\\/g, "");
+  try {
+    const url = new URL(cleaned);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch (err) { return ""; }
+}
+
+// ---------- Import-Validierung ----------
+const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const COMPETITION_TYPES = ["league", "national_cup", "international_cup", "friendly", "other"];
+const CUP_STAGES = ["final", "semifinal", "knockout", "group", "qualification"];
+const OPT_MODES = ["most_games", "groundhopper_score", "balanced"];
+
+function toNum(v, fallback = null) { const n = typeof v === "number" ? v : parseFloat(v); return Number.isFinite(n) ? n : fallback; }
+function toText(v, max = 300) { return String(v ?? "").slice(0, max); }
+function isValidDate(v) { return DATE_RE.test(String(v)) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime()); }
+
+function sanitizeSettings(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  ["arrivalBufferMin", "departureBufferMin", "halfTimeMin", "stoppageTimeMin", "maxExtraNightDriveMin"].forEach(key => {
+    const v = toNum(raw[key]);
+    if (v !== null && v >= 0 && v <= 600) out[key] = Math.round(v);
+  });
+  ["maxNightDriveTime", "nextDayStartHour"].forEach(key => {
+    if (TIME_RE.test(String(raw[key]))) out[key] = raw[key];
+  });
+  const w = raw.groundhopperWeights;
+  if (w && typeof w === "object") {
+    out.groundhopperWeights = {
+      highlight: Math.max(0, toNum(w.highlight, 0)), stage: Math.max(0, toNum(w.stage, 0)),
+      competition: Math.max(0, toNum(w.competition, 0)), stadium: Math.max(0, toNum(w.stadium, 0))
+    };
+  }
+  return out;
+}
+
+function sanitizeImportedMatch(raw, usedIds, index) {
+  if (!raw || typeof raw !== "object") return null;
+  const lat = toNum(raw.lat), lng = toNum(raw.lng);
+  const home = toText(raw.home, 100).trim(), away = toText(raw.away, 100).trim();
+  if (lat === null || lng === null || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  if (!home || !away || !isValidDate(raw.date) || !TIME_RE.test(String(raw.time))) return null;
+  // IDs landen in onclick-Handlern: nur sichere Zeichen zulassen (Escaping reicht dort nicht).
+  let id = String(raw.id ?? "");
+  if (!SAFE_ID_RE.test(id) || usedIds.has(id)) id = `m_${Date.now()}_${index}`;
+  usedIds.add(id);
+  const type = COMPETITION_TYPES.includes(raw.competitionType) ? raw.competitionType : "league";
+  const level = toNum(raw.leagueLevel), capacity = toNum(raw.stadiumCapacity);
+  const buffer = v => { const n = toNum(v); return n !== null && n >= 0 && n <= 600 ? Math.round(n) : null; };
+  return {
+    id, home, away,
+    homeLogo: safeHttpUrl(raw.homeLogo), awayLogo: safeHttpUrl(raw.awayLogo),
+    clubWebsite: safeHttpUrl(raw.clubWebsite),
+    homeTeamId: toText(raw.homeTeamId, 40), stadiumVenueId: toText(raw.stadiumVenueId, 40),
+    stadiumCapacity: capacity !== null && capacity > 0 ? Math.round(capacity) : null,
+    stadiumSource: ["auto-team", "manual", "team"].includes(raw.stadiumSource) ? raw.stadiumSource : "manual",
+    competitionType: type,
+    cupStage: isCupCompetition(type) && CUP_STAGES.includes(raw.cupStage) ? raw.cupStage : null,
+    leagueLevel: type === "league" && level >= 1 && level <= 6 ? Math.round(level) : null,
+    countryCode: /^[a-z]{2}$/i.test(String(raw.countryCode)) ? String(raw.countryCode).toLowerCase() : null,
+    leagueName: raw.leagueName ? toText(raw.leagueName, 80) : null,
+    date: raw.date, time: raw.time,
+    stadium: toText(raw.stadium, 200), resolvedAddress: toText(raw.resolvedAddress, 300),
+    lat, lng, mustAttend: !!raw.mustAttend,
+    customArrivalBuffer: buffer(raw.customArrivalBuffer), customDepartureBuffer: buffer(raw.customDepartureBuffer)
+  };
+}
+
+// Baut einen importierten Plan ausschließlich aus bereits bereinigten Spielen neu auf.
+function rebindImportedPlan(raw, byOldId, availableCount, mustTotal) {
+  if (!raw || !Array.isArray(raw.dayChains)) return null;
+  const find = ref => byOldId.get(String(ref && typeof ref === "object" ? ref.id : ref)) || null;
+  const dayChains = [];
+  for (const dc of raw.dayChains) {
+    if (!dc || !isValidDate(dc.date) || !Array.isArray(dc.chain)) return null;
+    const chain = dc.chain.map(find);
+    const dropped = (Array.isArray(dc.dropped) ? dc.dropped : []).map(d => ({ match: find(d && d.match), reason: toText(d && d.reason) }));
+    if (chain.includes(null) || dropped.some(d => !d.match)) return null;
+    const o = dc.overnightAfter, oLat = o && toNum(o.lat), oLng = o && toNum(o.lng), from = o && find(o.fromMatchId);
+    dayChains.push({
+      date: dc.date, chain, dropped,
+      overnightAfter: o && oLat !== null && oLng !== null
+        ? { fromMatchId: from ? from.id : "", override: !!o.override, lat: oLat, lng: oLng, name: toText(o.name) } : null
+    });
+  }
+  const selected = dayChains.flatMap(dc => dc.chain), dropped = dayChains.flatMap(dc => dc.dropped);
+  const scoreSum = toNum(raw.scoreSum, selected.reduce((s, m) => s + groundhopperScore(m), 0));
+  return {
+    dayChains, selected, dropped,
+    totalTravelMin: toNum(raw.totalTravelMin, 0), tightNights: toNum(raw.tightNights, 0), infeasibleNights: toNum(raw.infeasibleNights, 0),
+    matchCount: selected.length, mustAttendCount: selected.filter(m => m.mustAttend).length, mustAttendTotal: mustTotal,
+    scoreSum, averageGroundhopperScore: selected.length ? scoreSum / selected.length : 0,
+    availableMatchCount: availableCount,
+    optimizationMode: OPT_MODES.includes(raw.optimizationMode) ? raw.optimizationMode : "most_games",
+    signature: toText(raw.signature, 2000), description: toText(raw.description, 500),
+    changedDates: Array.isArray(raw.changedDates) ? raw.changedDates.filter(d => isValidDate(d)) : []
+  };
+}
+
+function normalizeImportedTrip(rawTrip, fallbackPlans) {
+  if (!rawTrip || typeof rawTrip !== "object" || !Array.isArray(rawTrip.matches)) return null;
+  const name = toText(rawTrip.name, 120).trim();
+  if (!name) return null;
+
+  const usedIds = new Set(), byOldId = new Map(), matches = [];
+  rawTrip.matches.forEach((raw, i) => {
+    const clean = sanitizeImportedMatch(raw, usedIds, i);
+    if (clean) { matches.push(clean); byOldId.set(String(raw.id), clean); }
+  });
+  if (rawTrip.matches.length > 0 && matches.length === 0) return null;
+
+  const sa = rawTrip.startAddress, saLat = sa && toNum(sa.lat), saLng = sa && toNum(sa.lng);
+  const startAddress = sa && saLat !== null && saLng !== null && Math.abs(saLat) <= 90 && Math.abs(saLng) <= 180
+    ? { address: toText(sa.address), lat: saLat, lng: saLng, countryCode: sa.countryCode ? toText(sa.countryCode, 2).toLowerCase() : null }
+    : null;
+
+  const overnightOverrides = {};
+  const rawOverrides = rawTrip.overnightOverrides && typeof rawTrip.overnightOverrides === "object" ? rawTrip.overnightOverrides : {};
+  Object.entries(rawOverrides).forEach(([oldId, o]) => {
+    const target = byOldId.get(oldId), lat = o && toNum(o.lat), lng = o && toNum(o.lng);
+    if (target && o && lat !== null && lng !== null) overnightOverrides[target.id] = { address: toText(o.address), lat, lng };
+  });
+
+  const mustTotal = matches.filter(m => m.mustAttend).length;
+  const rawPlans = Array.isArray(rawTrip.plans) ? rawTrip.plans : (Array.isArray(fallbackPlans) ? fallbackPlans : []);
+  const plans = rawPlans.map(p => rebindImportedPlan(p, byOldId, matches.length, mustTotal)).filter(Boolean);
+
+  const trip = {
+    id: "trip_" + Date.now(), name, startAddress, matches, overnightOverrides,
+    optimizationMode: OPT_MODES.includes(rawTrip.optimizationMode) ? rawTrip.optimizationMode : "most_games"
+  };
+  if (plans.length) {
+    trip.plans = plans;
+    if (rawTrip.selectedPlanSignature) trip.selectedPlanSignature = toText(rawTrip.selectedPlanSignature, 2000);
+  }
+  return { trip, skipped: rawTrip.matches.length - matches.length };
 }
 
 function renderActiveTrip() {
@@ -768,8 +917,9 @@ function renderActiveTrip() {
 }
 
 function websiteLinkHtml(m, className = "") {
-  if (!m.clubWebsite) return "";
-  return `<a class="club-website-link ${className}" href="${escapeHtml(m.clubWebsite)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>`;
+  const url = safeHttpUrl(m.clubWebsite);
+  if (!url) return "";
+  return `<a class="club-website-link ${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>`;
 }
 
 function capacityHtml(m) {
@@ -848,31 +998,44 @@ function renderMatchList() {
 }
 
 // ---------- OSRM Routing ----------
+let routingEstimated = false; // true, sobald Fahrzeiten geschätzt werden mussten
+
+function estimateTravelMin(lat1, lng1, lat2, lng2) {
+  const rad = d => d * Math.PI / 180;
+  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  const km = 6371 * 2 * Math.asin(Math.sqrt(a)) * 1.3; // Luftlinie × 1,3
+  return Math.max(1, Math.round(km / 75 * 60));        // ca. 75 km/h
+}
+
 async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = false) {
   const stepsParam = withSteps ? "&steps=true" : "";
   const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson${stepsParam}`;
   try {
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.routes && data.routes.length > 0) {
       const route = data.routes[0];
       return {
         durationMin: Math.round(route.duration / 60),
         geometry: route.geometry,
-        steps: withSteps && route.legs && route.legs[0] ? route.legs[0].steps : null
+        steps: withSteps && route.legs && route.legs[0] ? route.legs[0].steps : null,
+        estimated: false
       };
     }
   } catch (err) {
     console.error("OSRM Error:", err);
   }
-  return { durationMin: 60, geometry: null, steps: null };
+  routingEstimated = true;
+  return { durationMin: estimateTravelMin(startLat, startLng, endLat, endLng), geometry: null, steps: null, estimated: true };
 }
 
 async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
   const key = `${lat1.toFixed(4)},${lng1.toFixed(4)}|${lat2.toFixed(4)},${lng2.toFixed(4)}`;
   if (travelCache.has(key)) return travelCache.get(key);
   const result = await getOSRMRoute(lat1, lng1, lat2, lng2);
-  travelCache.set(key, result.durationMin);
+  if (!result.estimated) travelCache.set(key, result.durationMin); // Schätzwerte nie cachen
   return result.durationMin;
 }
 
@@ -1099,18 +1262,19 @@ async function planOvernight(prevMatch, nextMatch) {
     }
   }
 
-  let overnightPoint = null;
+    let overnightPoint;
   if (result.eveningDriveMin > 1) {
-    const targetSec = result.eveningDriveMin * 60;
-    const coord = findPointAtTime(osrm.steps, targetSec);
-    if (coord) {
-      const placeName = await reverseGeocode(coord.lat, coord.lng, 10);
-      overnightPoint = {
-        lat: coord.lat,
-        lng: coord.lng,
-        suggestedName: placeName || `Ungefähr ${coord.lat.toFixed(3)}, ${coord.lng.toFixed(3)}`
-      };
-    }
+    const fraction = Math.min(1, result.eveningDriveMin / Math.max(1, totalTravelMin));
+    const coord = findPointAtTime(osrm.steps, result.eveningDriveMin * 60) || {
+      lat: prevMatch.lat + (nextMatch.lat - prevMatch.lat) * fraction,
+      lng: prevMatch.lng + (nextMatch.lng - prevMatch.lng) * fraction
+    };
+    const placeName = await reverseGeocode(coord.lat, coord.lng, 10);
+    overnightPoint = {
+      lat: coord.lat,
+      lng: coord.lng,
+      suggestedName: placeName || `Ungefähr ${coord.lat.toFixed(3)}, ${coord.lng.toFixed(3)}`
+    };
   } else {
     overnightPoint = { lat: prevMatch.lat, lng: prevMatch.lng, suggestedName: prevMatch.stadium };
   }
@@ -1432,6 +1596,7 @@ async function calculateRoute() {
   if (switcherEl) switcherEl.innerHTML = "";
   routeLayer.clearLayers();
   travelCache.clear();
+  routingEstimated = false;
 
   currentPlans = await buildOptimizedScheduleAlternatives(trip);
 
@@ -1612,6 +1777,7 @@ async function renderDayTiles(plan, trip) {
         tileBody += `
           <div class="timeline-item overnight-block">
             <h4>🌙 Übernachtung erforderlich</h4>
+            <p class="print-only"><strong>Adresse:</strong> ${escapeHtml(overnightLoc.name)}</p>
             ${warningHtml}
             <p>Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.</p>
             ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
@@ -1645,7 +1811,10 @@ async function renderDayTiles(plan, trip) {
     `;
   }
 
-  timelineEl.innerHTML = html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
+    const routingWarning = routingEstimated
+    ? '<div class="warning-banner">⚠️ Der Routing-Dienst war nicht erreichbar oder lieferte keine Route – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.</div>'
+    : '';
+  timelineEl.innerHTML = routingWarning + (html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>');
 
   if (allDropped.length > 0) {
     droppedEl.innerHTML = `
@@ -1746,31 +1915,25 @@ function importTrip(event) {
   if (!file) return;
 
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = function (e) {
     try {
       const importedData = JSON.parse(e.target.result);
-      let importedTrip = importedData.trip || importedData;
-
-      if (!importedTrip || !importedTrip.name || !Array.isArray(importedTrip.matches)) {
-        alert("Ungültiges Dateiformat. Bitte wähle eine gültige Groundhopping JSON-Datei.");
+      const result = normalizeImportedTrip(
+        importedData && importedData.trip ? importedData.trip : importedData,
+        importedData && importedData.plans
+      );
+      if (!result) {
+        alert("Ungültiges Dateiformat oder keine gültigen Spiele. Bitte wähle eine gültige Groundhopping JSON-Datei.");
         return;
       }
 
-      // Neue eindeutige ID vergeben (verhindert Überschreiben)
-      importedTrip.id = "trip_" + Date.now();
-      importedTrip.name = importedTrip.name + " (Importiert)";
-
-      if (!importedTrip.plans && importedData.plans) {
-        importedTrip.plans = importedData.plans;
-      }
-
+      const importedTrip = result.trip;
+      importedTrip.name += " (Importiert)";
       state.trips.push(importedTrip);
       state.activeTripId = importedTrip.id;
 
-      if (importedData.settings) {
-        if (confirm("Möchtest du auch die Trip-Einstellungen (Pufferzeiten, Nachtfahrtsgrenzen) übernehmen?")) {
-          state.settings = { ...state.settings, ...importedData.settings };
-        }
+      if (importedData.settings && confirm("Möchtest du auch die Trip-Einstellungen (Pufferzeiten, Nachtfahrtsgrenzen) übernehmen?")) {
+        state.settings = { ...state.settings, ...sanitizeSettings(importedData.settings) };
       }
 
       saveLocalStorage();
@@ -1778,7 +1941,8 @@ function importTrip(event) {
       resetMatchForm();
       renderActiveTrip();
 
-      alert(`Trip "${importedTrip.name}" wurde erfolgreich importiert!`);
+      alert(`Trip "${importedTrip.name}" wurde erfolgreich importiert!` +
+        (result.skipped ? `\n${result.skipped} Spiel(e) mit ungültigen Daten wurden übersprungen.` : ""));
     } catch (err) {
       console.error("Import-Fehler:", err);
       alert("Fehler beim Importieren. Die Datei ist beschädigt oder kein gültiges JSON.");
