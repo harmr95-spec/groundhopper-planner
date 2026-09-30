@@ -10,20 +10,23 @@
       .replace(/\r?\n/g, "\\n");
   }
 
-  function toUtcDate(match) {
-    // Match dates/times are entered as local time. Calendar events are written
-    // with a floating local time (no Z suffix), so calendar apps keep the
-    // stadium's local wall-clock time instead of shifting it by a timezone.
-    const date = String(match.date || "").replace(/-/g, "");
-    const time = String(match.time || "00:00").replace(/:/g, "");
-    return `${date}T${time}00`;
+  const pad = value => String(value).padStart(2, "0");
+
+  // Floating local time (kein Z-Suffix): Kalender-Apps behalten die Wanduhrzeit des Stadions.
+  function formatIcsLocal(date) {
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+      `T${pad(date.getHours())}${pad(date.getMinutes())}00`;
   }
 
-  function addMinutes(dateString, minutes) {
-    const date = new Date(`${dateString}T00:00:00`);
-    date.setMinutes(date.getMinutes() + minutes);
-    const pad = value => String(value).padStart(2, "0");
-    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}00`;
+  // DTSTAMP muss laut RFC 5545 in UTC mit "Z" stehen.
+  function formatIcsUtcNow() {
+    return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  }
+
+  // Spielende inkl. Abreisepuffer: eine einzige Definition (app.js), Fallback nur zur Sicherheit.
+  function eventEnd(match, kickoff) {
+    if (typeof calculateMatchEndTime === "function") return calculateMatchEndTime(match);
+    return new Date(kickoff.getTime() + 115 * 60000);
   }
 
   function download(filename, content, type) {
@@ -40,9 +43,8 @@
 
   function matchIcs(match) {
     const uid = `${match.id || Date.now()}@groundhopper-planner`;
-    const start = toUtcDate(match);
-    const duration = (Number(match.customDepartureBuffer) || 30) + 115;
-    const end = addMinutes(match.date, Math.max(1, duration));
+    const kickoff = new Date(`${match.date}T${match.time || "00:00"}`);
+    const end = eventEnd(match, kickoff);
     const summary = `${match.home || "Heimteam"} vs. ${match.away || "Auswärtsteam"}`;
     const description = [
       match.leagueName || "",
@@ -57,9 +59,9 @@
       "METHOD:PUBLISH",
       "BEGIN:VEVENT",
       `UID:${escapeIcs(uid)}`,
-      `DTSTAMP:${toUtcDate({ date: new Date().toISOString().slice(0, 10), time: new Date().toTimeString().slice(0, 5) })}`,
-      `DTSTART:${start}`,
-      `DTEND:${end}`,
+      `DTSTAMP:${formatIcsUtcNow()}`,
+      `DTSTART:${formatIcsLocal(kickoff)}`,
+      `DTEND:${formatIcsLocal(end)}`,
       `SUMMARY:${escapeIcs(summary)}`,
       `LOCATION:${escapeIcs(match.resolvedAddress || match.stadium)}`,
       `DESCRIPTION:${escapeIcs(description)}`,
@@ -80,6 +82,9 @@
 
   window.printActiveTrip = function () {
     document.body.classList.add("printing-trip");
+    window.addEventListener("afterprint", () => {
+      document.body.classList.remove("printing-trip");
+    }, { once: true });
     window.setTimeout(() => window.print(), 50);
   };
 
