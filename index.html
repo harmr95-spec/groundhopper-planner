@@ -74,14 +74,8 @@
             </div>
           </div>
           
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="competitionType">Wettbewerb *</label>
-            <select id="competitionType" required style="width:100%;margin-top:0.25rem;">
-              <option value="league" selected>Liga</option><option value="national_cup">Pokal national</option><option value="international_cup">Pokal international</option><option value="friendly">Freundschaftsspiel</option><option value="other">Sonstiges</option>
-            </select>
-          </div>
           <!-- Liga Level -->
-          <div id="leagueLevelGroup" class="form-group" style="margin-bottom: 0.75rem;">
+          <div class="form-group" style="margin-bottom: 0.75rem;">
             <label for="leagueLevel">Liga Level *</label>
             <select id="leagueLevel" required style="width: 100%; margin-top: 0.25rem;">
               <option value="">Liga Level wählen *</option>
@@ -94,10 +88,6 @@
             </select>
           </div>
 
-          <div id="cupStageGroup" class="form-group" style="display:none;margin-bottom:0.75rem;">
-            <label for="cupStage">Pokalphase *</label>
-            <select id="cupStage" style="width:100%;margin-top:0.25rem;"><option value="final">Finale</option><option value="semifinal">Halbfinale</option><option value="knockout" selected>KO-Runde</option><option value="group">Gruppenphase</option><option value="qualification">Qualifikationsphase</option></select>
-          </div>
           <!-- Datum & Uhrzeit -->
           <div class="form-row" style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
             <div style="flex: 1;">
@@ -158,7 +148,11 @@
       <div class="card timeline-card">
         <div class="timeline-header">
           <h2>Optimierter Ablaufplan</h2>
-          <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+          <div class="route-calculation-controls">
+            <label for="optimizationMode">Berechnungsmethode</label>
+            <select id="optimizationMode"><option value="most_games" selected>Meiste Spiele</option><option value="groundhopper_score">Groundhopper Score</option><option value="balanced">Ausgewogen</option></select>
+            <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+          </div>
         </div>
 
         <!-- CONTAINER FÜR TRIP-ALTERNATIVEN & STATISTIKEN -->
@@ -205,12 +199,7 @@
         <input type="number" id="settingMaxExtraNightDrive" value="120" min="0" step="15" />
       </div>
       <hr class="settings-divider"><h3>Groundhopper Score</h3><p class="settings-hint">Die Werte werden automatisch auf 100 % normalisiert.</p>
-      <div class="score-weight-grid">
-        <label>Highlightspiel<input type="number" id="weightHighlight" value="40" min="0"></label>
-        <label>Liga-Level / Pokalphase<input type="number" id="weightStage" value="30" min="0"></label>
-        <label>Wettbewerbsart<input type="number" id="weightCompetition" value="20" min="0"></label>
-        <label>Stadiongröße<input type="number" id="weightStadium" value="10" min="0"></label>
-      </div>
+      <div class="score-weight-grid"><label>Highlightspiel<input type="number" id="weightHighlight" value="40" min="0"></label><label>Liga-Level / Pokalphase<input type="number" id="weightStage" value="30" min="0"></label><label>Wettbewerbsart<input type="number" id="weightCompetition" value="20" min="0"></label><label>Stadiongröße<input type="number" id="weightStadium" value="10" min="0"></label></div>
       <div class="modal-actions">
         <button onclick="saveSettings()" class="btn btn-primary">Speichern</button>
         <button onclick="toggleSettingsModal()" class="btn btn-secondary">Abbrechen</button>
