@@ -7,8 +7,7 @@ let state = {
     stoppageTimeMin: 10,
     maxNightDriveTime: "22:00",
     nextDayStartHour: "08:00",
-    maxExtraNightDriveMin: 120,
-    groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
+    maxExtraNightDriveMin: 120
   },
   trips: []
 };
@@ -66,8 +65,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Event Listener für automatische Wappen-Suche bei Blur
   document.getElementById("homeTeam").addEventListener("blur", () => autoFetchCrest('home'));
   document.getElementById("awayTeam").addEventListener("blur", () => autoFetchCrest('away'));
-  document.getElementById("competitionType").addEventListener("change", updateCompetitionFields);
-  updateCompetitionFields();
 
   // Eine manuelle Stadionänderung entkoppelt das Stadion vom Heimverein.
   document.getElementById("stadiumAddress").addEventListener("input", (event) => {
@@ -491,49 +488,6 @@ async function setStartAddress() {
   }
 }
 
-function isCupCompetition(type) { return type === "national_cup" || type === "international_cup"; }
-function updateCompetitionFields() {
-  const type = document.getElementById("competitionType")?.value || "league";
-  const leagueGroup = document.getElementById("leagueLevelGroup");
-  const cupGroup = document.getElementById("cupStageGroup");
-  if (leagueGroup) leagueGroup.style.display = type === "league" ? "flex" : "none";
-  if (cupGroup) cupGroup.style.display = isCupCompetition(type) ? "flex" : "none";
-  const league = document.getElementById("leagueLevel");
-  const stage = document.getElementById("cupStage");
-  if (league) league.required = type === "league";
-  if (stage) stage.required = isCupCompetition(type);
-}
-function competitionLabel(type) {
-  return ({league:"Liga",national_cup:"Pokal national",international_cup:"Pokal international",friendly:"Freundschaftsspiel",other:"Sonstiges"})[type || "league"] || "Liga";
-}
-function cupStageLabel(stage) {
-  return ({final:"Finale",semifinal:"Halbfinale",knockout:"KO-Runde",group:"Gruppenphase",qualification:"Qualifikationsphase"})[stage] || "";
-}
-function normalizedWeights() {
-  const w = state.settings.groundhopperWeights || { highlight:40, stage:30, competition:20, stadium:10 };
-  const values = { highlight:+w.highlight||0, stage:+w.stage||0, competition:+w.competition||0, stadium:+w.stadium||0 };
-  const sum = Object.values(values).reduce((a,b)=>a+b,0) || 1;
-  return Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v/sum]));
-}
-function matchScoreDetails(m) {
-  const type=m.competitionType||"league", w=normalizedWeights();
-  const highlight=m.mustAttend?100:0;
-  const stage=type==="league" ? ({1:100,2:83,3:67,4:50,5:33,6:17}[m.leagueLevel]||0)
-    : isCupCompetition(type) ? ({final:100,semifinal:80,knockout:60,group:40,qualification:20}[m.cupStage]||0) : 0;
-  const competition=({international_cup:100,national_cup:75,league:50,other:25,friendly:10})[type]||0;
-  const c=Number(m.stadiumCapacity)||0;
-  const stadium=c>=60000?100:c>=40000?80:c>=20000?60:c>=10000?40:c>=5000?20:c>0?10:0;
-  const score=Math.round(highlight*w.highlight+stage*w.stage+competition*w.competition+stadium*w.stadium);
-  return {score,highlight,stage,competition,stadium};
-}
-function scoreHtml(m) { const d=matchScoreDetails(m); return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Wettbewerb/Phase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">🏆 Groundhopper Score: <strong>${d.score}/100</strong></span>`; }
-function matchContextLabel(m) {
-  const type=m.competitionType||"league";
-  if(type==="league") return `${escapeHtml(m.leagueName||getLeagueName(m.countryCode,m.leagueLevel))} · Liga`;
-  if(isCupCompetition(type)) return `${competitionLabel(type)}${m.cupStage?` · ${cupStageLabel(m.cupStage)}`:""}`;
-  return competitionLabel(type);
-}
-
 // ---------- Match Handling ----------
 async function addMatch(e) {
   e.preventDefault();
@@ -541,9 +495,7 @@ async function addMatch(e) {
   if (!trip) return;
 
   const stadiumAddr = document.getElementById("stadiumAddress").value;
-  const competitionType = document.getElementById("competitionType").value || "league";
-  const leagueLevel = competitionType === "league" ? parseInt(document.getElementById("leagueLevel").value) : null;
-  const cupStage = isCupCompetition(competitionType) ? document.getElementById("cupStage").value : null;
+  const leagueLevel = parseInt(document.getElementById("leagueLevel").value);
 
   // Falls direkt auf Speichern geklickt wird, die manuelle Stadionsuche abwarten.
   if (stadiumAddr.trim() && stadiumAddr.trim() !== lastAutoFilledStadium && !currentVenueData) {
@@ -581,11 +533,9 @@ async function addMatch(e) {
     stadiumVenueId: currentVenueData?.id || "",
     stadiumCapacity: currentVenueData?.capacity || null,
     stadiumSource: lastAutoFilledStadium && stadiumAddr.trim() === lastAutoFilledStadium ? "auto-team" : "manual",
-    competitionType,
-    cupStage,
     leagueLevel: leagueLevel,
     countryCode: coords.countryCode,
-    leagueName: competitionType === "league" ? getLeagueName(coords.countryCode, leagueLevel) : null,
+    leagueName: getLeagueName(coords.countryCode, leagueLevel),
     date: document.getElementById("matchDate").value,
     time: document.getElementById("matchTime").value,
     stadium: stadiumAddr,
@@ -628,10 +578,7 @@ function editMatch(matchId) {
   document.getElementById("awayTeam").value = match.away || "";
   document.getElementById("homeLogo").value = match.homeLogo || "";
   document.getElementById("awayLogo").value = match.awayLogo || "";
-  document.getElementById("competitionType").value = match.competitionType || "league";
   document.getElementById("leagueLevel").value = match.leagueLevel || 1;
-  document.getElementById("cupStage").value = match.cupStage || "knockout";
-  updateCompetitionFields();
   document.getElementById("matchDate").value = match.date || "";
   document.getElementById("matchTime").value = match.time || "";
   document.getElementById("stadiumAddress").value = match.stadium || "";
@@ -675,8 +622,6 @@ function editMatch(matchId) {
 function resetMatchForm() {
   editingMatchId = null;
   document.getElementById("matchForm").reset();
-  document.getElementById("competitionType").value = "league";
-  updateCompetitionFields();
   lastAutoFilledStadium = "";
   currentHomeTeamData = null;
   currentVenueData = null;
@@ -743,6 +688,8 @@ function renderActiveTrip() {
 
   document.getElementById("matchCount").innerText = trip.matches.length;
   document.getElementById("startAddress").value = trip.startAddress ? trip.startAddress.address : "";
+  const modeSelect = document.getElementById("optimizationMode");
+  if (modeSelect) modeSelect.value = trip.optimizationMode || "most_games";
 
   // Falls gespeicherte Alternativen im Trip vorhanden sind (aus Storage oder Import), diese wiederherstellen
   if (trip.plans && trip.plans.length > 0) {
@@ -783,7 +730,7 @@ function matchPopupHtml(m) {
   const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
   return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
-    ${matchContextLabel(m)}<br>${scoreHtml(m)}<br>
+    ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
     🏟️ <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
     📅 ${m.date} um ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}`;
 }
@@ -836,7 +783,7 @@ function renderMatchList() {
       return `
     <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
       <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
-      ${matchContextLabel(m)}<br>${scoreHtml(m)}<br>
+      ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
       📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}
       ${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}
@@ -923,8 +870,12 @@ function timeToDateOnDay(dateStr, timeStr) {
   return d;
 }
 
-function priorityScore(m) {
-  return 11 - m.leagueLevel;
+function priorityScore(m) { return groundhopperScore(m); }
+function compareDpStates(candidate,current,ref){
+ if(!current)return true;const ca=candidate.count?candidate.score/candidate.count:0,cu=current.count?current.score/current.count:0;
+ if(currentOptimizationMode==="groundhopper_score"){if(ca!==cu)return ca>cu;if(candidate.count!==current.count)return candidate.count>current.count;}
+ else if(currentOptimizationMode==="balanced"){const cb=.6*(candidate.count/Math.max(1,ref))*100+.4*ca,ub=.6*(current.count/Math.max(1,ref))*100+.4*cu;if(cb!==ub)return cb>ub;if(candidate.count!==current.count)return candidate.count>current.count;}
+ else{if(candidate.count!==current.count)return candidate.count>current.count;if(candidate.score!==current.score)return candidate.score>current.score;}return false;
 }
 
 // ---------- Dynamic Programming ----------
@@ -955,9 +906,8 @@ async function computeDayDP(segment, startLoc, startTime) {
       if (earliest <= requiredArrival) {
         const candCount = dp[i].count + 1;
         const candScore = dp[i].score + priorityScore(m);
-        if (!best || candCount > best.count || (candCount === best.count && candScore > best.score)) {
-          best = { count: candCount, score: candScore, prev: i };
-        }
+        const candidate = { count: candCount, score: candScore, prev: i };
+        if (compareDpStates(candidate, best, n)) best = candidate;
       }
     }
     dp[j] = best;
@@ -982,9 +932,7 @@ async function bestChainUnconstrained(segment, startLoc, startTime) {
   let bestIdx = -1;
   for (let j = 0; j < dp.length; j++) {
     if (!dp[j]) continue;
-    if (bestIdx === -1 || dp[j].count > dp[bestIdx].count || (dp[j].count === dp[bestIdx].count && dp[j].score > dp[bestIdx].score)) {
-      bestIdx = j;
-    }
+    if (bestIdx === -1 || compareDpStates(dp[j], dp[bestIdx], segment.length)) bestIdx = j;
   }
   if (bestIdx === -1) return { chain: [], usedIndices: new Set() };
   const chain = reconstructChain(dp, segment, bestIdx);
@@ -1186,10 +1134,7 @@ async function generateDayCandidates(dayMatches, startLoc, startTime, maxAlterna
     const mustDroppedA = a.dropped.filter(x => x.match.mustAttend).length;
     const mustDroppedB = b.dropped.filter(x => x.match.mustAttend).length;
     if (mustDroppedA !== mustDroppedB) return mustDroppedA - mustDroppedB;
-    if (b.chain.length !== a.chain.length) return b.chain.length - a.chain.length;
-    const scoreA = a.chain.reduce((s, m) => s + priorityScore(m), 0);
-    const scoreB = b.chain.reduce((s, m) => s + priorityScore(m), 0);
-    return scoreB - scoreA;
+    return compareOptimizationMetrics(a.chain, b.chain, dayMatches.length);
   });
 
   return candidates.slice(0, Math.max(1, maxAlternatives));
@@ -1205,12 +1150,14 @@ async function computeDayTravelMin(chain, startLoc) {
   return total;
 }
 
-function comparePlans(a, b) {
-  if (a.infeasibleNights !== b.infeasibleNights) return a.infeasibleNights - b.infeasibleNights;
-  if (a.mustAttendCount !== b.mustAttendCount) return b.mustAttendCount - a.mustAttendCount;
-  if (a.matchCount !== b.matchCount) return b.matchCount - a.matchCount;
-  if (a.tightNights !== b.tightNights) return a.tightNights - b.tightNights;
-  return a.totalTravelMin - b.totalTravelMin;
+function comparePlans(a,b,referenceCount=null){
+ if(a.infeasibleNights!==b.infeasibleNights)return a.infeasibleNights-b.infeasibleNights;
+ if(a.mustAttendCount!==b.mustAttendCount)return b.mustAttendCount-a.mustAttendCount;
+ const ref=Math.max(1,referenceCount||a.availableMatchCount||b.availableMatchCount||a.matchCount||b.matchCount),avgA=a.matchCount?(a.scoreSum||0)/a.matchCount:0,avgB=b.matchCount?(b.scoreSum||0)/b.matchCount:0;
+ if(currentOptimizationMode==="groundhopper_score"){if(avgA!==avgB)return avgB-avgA;if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;}
+ else if(currentOptimizationMode==="balanced"){const A=.6*(a.matchCount/ref)*100+.4*avgA,B=.6*(b.matchCount/ref)*100+.4*avgB;if(A!==B)return B-A;if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;}
+ else{if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;if((a.scoreSum||0)!==(b.scoreSum||0))return (b.scoreSum||0)-(a.scoreSum||0);}
+ if(a.tightNights!==b.tightNights)return a.tightNights-b.tightNights;return a.totalTravelMin-b.totalTravelMin;
 }
 
 function finalizePlanState(beamState, trip) {
@@ -1233,6 +1180,10 @@ function finalizePlanState(beamState, trip) {
     matchCount: beamState.matchCount,
     mustAttendCount: beamState.mustAttendCount,
     mustAttendTotal,
+    scoreSum: beamState.scoreSum || selected.reduce((sum, match) => sum + groundhopperScore(match), 0),
+    averageGroundhopperScore: selected.length ? (beamState.scoreSum || selected.reduce((sum, match) => sum + groundhopperScore(match), 0)) / selected.length : 0,
+    availableMatchCount: trip.matches.length,
+    optimizationMode: currentOptimizationMode,
     signature
   };
 }
@@ -1316,7 +1267,9 @@ async function buildOptimizedScheduleAlternatives(trip) {
     tightNights: 0,
     infeasibleNights: 0,
     matchCount: 0,
-    mustAttendCount: 0
+    mustAttendCount: 0,
+    scoreSum: 0,
+    availableMatchCount: trip.matches.length
   }];
 
   for (let d = 0; d < dates.length; d++) {
@@ -1373,28 +1326,32 @@ async function buildOptimizedScheduleAlternatives(trip) {
           tightNights: beamState.tightNights + tightAdd,
           infeasibleNights: beamState.infeasibleNights + infeasibleAdd,
           matchCount: beamState.matchCount + cand.chain.length,
-          mustAttendCount: beamState.mustAttendCount + cand.chain.filter(m => m.mustAttend).length
+          mustAttendCount: beamState.mustAttendCount + cand.chain.filter(m => m.mustAttend).length,
+          scoreSum: beamState.scoreSum + cand.chain.reduce((sum, match) => sum + groundhopperScore(match), 0),
+          availableMatchCount: trip.matches.length
         };
 
         const existing = nextBeamMap.get(signature);
-        if (!existing || comparePlans(newState, existing) < 0) {
+        if (!existing || comparePlans(newState, existing, trip.matches.length) < 0) {
           nextBeamMap.set(signature, newState);
         }
       }
     }
 
     let nextBeam = [...nextBeamMap.values()];
-    nextBeam.sort(comparePlans);
+    const nextReferenceCount = Math.max(1, ...nextBeam.map(plan => plan.matchCount));
+    nextBeam.sort((a,b) => comparePlans(a,b,nextReferenceCount));
     beam = nextBeam.slice(0, BEAM_WIDTH);
   }
 
   const finalized = beam.map(b => finalizePlanState(b, trip));
-  finalized.sort(comparePlans);
+  const finalReferenceCount = Math.max(1, ...finalized.map(plan => plan.matchCount));
+  finalized.sort((a,b) => comparePlans(a,b,finalReferenceCount));
   const diverse = finalized.slice(0, MAX_PLANS);
 
   diverse.forEach((p, i) => {
     if (i === 0) {
-      p.description = "Beste gefundene Kombination nach Highlightspielen, Spielanzahl und Fahrzeit.";
+      p.description = currentOptimizationMode === "groundhopper_score" ? "Beste gefundene Kombination nach durchschnittlichem Groundhopper Score." : currentOptimizationMode === "balanced" ? "Ausgewogene Kombination aus Spielanzahl (60 %) und Groundhopper Score (40 %)." : "Beste gefundene Kombination nach Highlightspielen, Spielanzahl und Fahrzeit.";
       p.changedDates = [];
     } else {
       p.description = diffDescription(diverse[0], p);
@@ -1416,6 +1373,9 @@ async function calculateRoute() {
     alert("Bitte gib eine Startadresse und mindestens ein Spiel ein.");
     return;
   }
+
+  currentOptimizationMode = document.getElementById("optimizationMode")?.value || "most_games";
+  trip.optimizationMode = currentOptimizationMode;
 
   timelineEl.innerHTML = "Berechne optimale Route, Spiele-Anzahl und Alternativen...";
   droppedEl.innerHTML = "";
@@ -1506,7 +1466,13 @@ function planStatsHtml(plan) {
     nightWarn = ` · ${plan.tightNights} enge Nachtfahrt(en)`;
   }
   const mustLabel = plan.mustAttendTotal > 0 ? ` (${plan.mustAttendCount}/${plan.mustAttendTotal} ⭐)` : '';
-  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel} · 🚗 ca. ${travelStr}${nightWarn}</div>`;
+  const fallbackSum = (plan.selected || []).reduce((sum, match) => sum + groundhopperScore(match), 0);
+  const scoreSum = Number.isFinite(plan.scoreSum) ? plan.scoreSum : fallbackSum;
+  const averageScore = Math.round(plan.matchCount ? scoreSum / plan.matchCount : 0);
+  const maxCount = Math.max(1, ...currentPlans.map(item => item.matchCount));
+  const balanced = Math.round(0.6 * (plan.matchCount / maxCount) * 100 + 0.4 * averageScore);
+  const modeExtra = plan.optimizationMode === "balanced" ? ` · ⚖️ Ausgewogen ${balanced}/100` : "";
+  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel} · 🏆 Ø ${averageScore}/100${modeExtra} · 🚗 ca. ${travelStr}${nightWarn}<br><span class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</span></div>`;
 }
 
 async function renderDayTiles(plan, trip) {
@@ -1560,7 +1526,8 @@ async function renderDayTiles(plan, trip) {
           <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
         </div>
         <div class="timeline-item match-item">
-          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${matchContextLabel(match)})<br>${scoreHtml(match)}<br>
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${matchContextLabel(match)})<br>
+          ${scoreHtml(match)}<br>
           ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
         </div>
       `;
@@ -1661,11 +1628,11 @@ function toggleSettingsModal() {
   document.getElementById("settingMaxNightDrive").value = state.settings.maxNightDriveTime;
   document.getElementById("settingNextDayStart").value = state.settings.nextDayStartHour;
   document.getElementById("settingMaxExtraNightDrive").value = state.settings.maxExtraNightDriveMin;
-  const weights=state.settings.groundhopperWeights||{highlight:40,stage:30,competition:20,stadium:10};
-  document.getElementById("weightHighlight").value=weights.highlight;
-  document.getElementById("weightStage").value=weights.stage;
-  document.getElementById("weightCompetition").value=weights.competition;
-  document.getElementById("weightStadium").value=weights.stadium;
+  const weights = state.settings.groundhopperWeights || {highlight:40,stage:30,competition:20,stadium:10};
+  document.getElementById("weightHighlight").value = weights.highlight;
+  document.getElementById("weightStage").value = weights.stage;
+  document.getElementById("weightCompetition").value = weights.competition;
+  document.getElementById("weightStadium").value = weights.stadium;
   modal.style.display = "flex";
 }
 
@@ -1677,7 +1644,7 @@ function saveSettings() {
   state.settings.maxNightDriveTime = document.getElementById("settingMaxNightDrive").value;
   state.settings.nextDayStartHour = document.getElementById("settingNextDayStart").value;
   state.settings.maxExtraNightDriveMin = parseInt(document.getElementById("settingMaxExtraNightDrive").value);
-  state.settings.groundhopperWeights={highlight:parseFloat(document.getElementById("weightHighlight").value)||0,stage:parseFloat(document.getElementById("weightStage").value)||0,competition:parseFloat(document.getElementById("weightCompetition").value)||0,stadium:parseFloat(document.getElementById("weightStadium").value)||0};
+  state.settings.groundhopperWeights = {highlight:parseFloat(document.getElementById("weightHighlight").value)||0,stage:parseFloat(document.getElementById("weightStage").value)||0,competition:parseFloat(document.getElementById("weightCompetition").value)||0,stadium:parseFloat(document.getElementById("weightStadium").value)||0};
 
   saveLocalStorage();
   toggleSettingsModal();
