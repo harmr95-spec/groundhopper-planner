@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Groundhopping Trip Planner</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="./style.css?v=20260930-1" />
 </head>
 <body>
 
@@ -148,11 +148,7 @@
       <div class="card timeline-card">
         <div class="timeline-header">
           <h2>Optimierter Ablaufplan</h2>
-          <div class="route-calculation-controls">
-            <label for="optimizationMode">Berechnungsmethode</label>
-            <select id="optimizationMode"><option value="most_games" selected>Meiste Spiele</option><option value="groundhopper_score">Groundhopper Score</option><option value="balanced">Ausgewogen</option></select>
-            <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
-          </div>
+          <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
         </div>
 
         <!-- CONTAINER FÜR TRIP-ALTERNATIVEN & STATISTIKEN -->
@@ -198,8 +194,6 @@
         <label for="settingMaxExtraNightDrive">Max. zusätzliche Nachtfahrt bei Zeitnot (Minuten):</label>
         <input type="number" id="settingMaxExtraNightDrive" value="120" min="0" step="15" />
       </div>
-      <hr class="settings-divider"><h3>Groundhopper Score</h3><p class="settings-hint">Die Werte werden automatisch auf 100 % normalisiert.</p>
-      <div class="score-weight-grid"><label>Highlightspiel<input type="number" id="weightHighlight" value="40" min="0"></label><label>Liga-Level / Pokalphase<input type="number" id="weightStage" value="30" min="0"></label><label>Wettbewerbsart<input type="number" id="weightCompetition" value="20" min="0"></label><label>Stadiongröße<input type="number" id="weightStadium" value="10" min="0"></label></div>
       <div class="modal-actions">
         <button onclick="saveSettings()" class="btn btn-primary">Speichern</button>
         <button onclick="toggleSettingsModal()" class="btn btn-secondary">Abbrechen</button>
