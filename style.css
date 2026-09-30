@@ -185,3 +185,6 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 .score-weight-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.75rem 0; }
 .score-weight-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
 .score-weight-grid input { padding: 0.4rem; }
+
+.print-only { display: none; }
+@media print { .print-only { display: block !important; } }
