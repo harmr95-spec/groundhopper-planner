@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Groundhopping Trip Planner</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261001-2" />
+  <link rel="stylesheet" href="./style.css?v=20261001-3" />
 </head>
 <body>
 
@@ -161,7 +161,7 @@
           <div class="route-calculation-controls">
             <label for="optimizationMode">Berechnungsmethode</label>
             <select id="optimizationMode"><option value="most_games" selected>Meiste Spiele</option><option value="groundhopper_score">Groundhopper Score</option><option value="balanced">Ausgewogen</option></select>
-            <button onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+            <button id="calculateRouteButton" onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
           </div>
         </div>
 
@@ -218,7 +218,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261001-2"></script>
-  <script src="./features.js?v=20261001-2"></script>
+  <script src="./app.js?v=20261001-3"></script>
+  <script src="./features.js?v=20261001-3"></script>
 </body>
 </html>
