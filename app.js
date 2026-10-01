@@ -1160,10 +1160,8 @@ async function computeDayDP(segment, startLoc, startTime) {
 
     let best = null;
 
-    const travelFromStart = await getCachedTravelMin(startLoc.lat, startLoc.lng, m.lat, m.lng);
-    const earliestFromStart = new Date(startTime.getTime() + travelFromStart * 60000);
-    if (earliestFromStart <= requiredArrival) {
-      best = { count: 1, score: priorityScore(m), prev: -1 };
+    if (await canStartWith(startLoc, startTime, m, requiredArrival)) {
+    best = { count: 1, score: priorityScore(m), prev: -1 };
     }
 
     for (let i = 0; i < j; i++) {
@@ -1283,45 +1281,61 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
 }
 
 // ---------- Übernachtungslogik ----------
-async function planOvernight(prevMatch, nextMatch, withName = true) {
+// Reine Machbarkeitsprüfung der Übernachtung zwischen zwei Spielen (ohne Netzwerkzugriff).
+function overnightFeasibility(prevMatch, nextMatch, totalTravelMin) {
   const prevEnd = calculateMatchEndTime(prevMatch);
-  const nextKickoff = new Date(`${nextMatch.date}T${nextMatch.time}`);
   const arrBuffer = nextMatch.customArrivalBuffer ?? state.settings.arrivalBufferMin;
-  const requiredArrival = new Date(nextKickoff.getTime() - arrBuffer * 60000);
-
-  const osrm = await getCachedRoute(prevMatch.lat, prevMatch.lng, nextMatch.lat, nextMatch.lng, true);
-  const totalTravelMin = osrm.durationMin;
-
+  const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
   const nightCutoff = timeToDateOnDay(prevMatch.date, state.settings.maxNightDriveTime);
   const morningStart = timeToDateOnDay(nextMatch.date, state.settings.nextDayStartHour);
+  const gapDays = Math.max(0, Math.round(
+    (new Date(`${nextMatch.date}T00:00:00`) - new Date(`${prevMatch.date}T00:00:00`)) / 86400000));
+  const freeDayMin = Math.max(0, gapDays - 1) * 12 * 60; // pro freiem Tag konservativ 12 h Fahrzeit
 
-  function computeFeasibility(cutoffTime) {
-    const availableEveningMin = Math.max(0, (cutoffTime - prevEnd) / 60000);
-    const availableMorningMin = Math.max(0, (requiredArrival - morningStart) / 60000);
-    const eveningDriveMin = Math.min(availableEveningMin, Math.max(0, totalTravelMin - availableMorningMin));
-    const feasible = totalTravelMin <= (availableEveningMin + availableMorningMin);
-    const missingMin = Math.max(0, totalTravelMin - (availableEveningMin + availableMorningMin));
-    return { eveningDriveMin, feasible, missingMin };
+  function compute(cutoff) {
+    const eveningMin = Math.max(0, (cutoff - prevEnd) / 60000);
+    const morningMin = Math.max(0, (requiredArrival - morningStart) / 60000);
+    const availableMin = eveningMin + morningMin + freeDayMin;
+    return {
+      feasible: totalTravelMin <= availableMin,
+      missingMin: Math.max(0, totalTravelMin - availableMin),
+      eveningDriveMin: gapDays >= 2 ? 0 : Math.min(eveningMin, Math.max(0, totalTravelMin - morningMin))
+    };
   }
 
-  let result = computeFeasibility(nightCutoff);
+  let result = compute(nightCutoff);
   let extraMinutesUsed = 0;
-
   if (!result.feasible) {
     const maxExtra = state.settings.maxExtraNightDriveMin ?? 120;
     for (let extra = 15; extra <= maxExtra; extra += 15) {
-      const extendedCutoff = new Date(nightCutoff.getTime() + extra * 60000);
-      const r = computeFeasibility(extendedCutoff);
-      result = r;
+      result = compute(new Date(nightCutoff.getTime() + extra * 60000));
       extraMinutesUsed = extra;
-      if (r.feasible) break;
+      if (result.feasible) break;
     }
   }
+  return { ...result, extraMinutesUsed, gapDays };
+}
 
-    let overnightPoint;
-  if (result.eveningDriveMin > 1) {
-    const fraction = Math.min(1, result.eveningDriveMin / Math.max(1, totalTravelMin));
-    const coord = findPointAtTime(osrm.steps, result.eveningDriveMin * 60) || {
+// Darf das Spiel m der erste Programmpunkt dieses Segments sein?
+// Startet das Segment an einem Stadion eines früheren Tages (origin.fromMatch), gilt die Nacht-Logik,
+// sonst die einfache Prüfung "Startzeit + Fahrzeit <= Ankunft".
+async function canStartWith(origin, startTime, m, requiredArrival) {
+  const travel = await getCachedTravelMin(origin.lat, origin.lng, m.lat, m.lng);
+  const from = origin.fromMatch;
+  if (from && from.date !== m.date) return overnightFeasibility(from, m, travel).feasible;
+  const base = from ? calculateMatchEndTime(from) : startTime;
+  return new Date(base.getTime() + travel * 60000) <= requiredArrival;
+}
+
+async function planOvernight(prevMatch, nextMatch, withName = true) {
+  const osrm = await getCachedRoute(prevMatch.lat, prevMatch.lng, nextMatch.lat, nextMatch.lng, true);
+  const totalTravelMin = osrm.durationMin;
+  const f = overnightFeasibility(prevMatch, nextMatch, totalTravelMin);
+
+  let overnightPoint;
+  if (f.eveningDriveMin > 1) {
+    const fraction = Math.min(1, f.eveningDriveMin / Math.max(1, totalTravelMin));
+    const coord = findPointAtTime(osrm.steps, f.eveningDriveMin * 60) || {
       lat: prevMatch.lat + (nextMatch.lat - prevMatch.lat) * fraction,
       lng: prevMatch.lng + (nextMatch.lng - prevMatch.lng) * fraction
     };
@@ -1336,10 +1350,11 @@ async function planOvernight(prevMatch, nextMatch, withName = true) {
   }
 
   return {
-    feasible: result.feasible,
-    extraMinutesUsed,
-    missingMin: Math.round(result.missingMin || 0),
-    eveningDriveMin: Math.round(result.eveningDriveMin),
+    feasible: f.feasible,
+    extraMinutesUsed: f.extraMinutesUsed,
+    missingMin: Math.round(f.missingMin || 0),
+    eveningDriveMin: Math.round(f.eveningDriveMin),
+    gapDays: f.gapDays,
     totalTravelMin,
     overnightPoint
   };
@@ -1546,44 +1561,41 @@ async function buildOptimizedScheduleAlternatives(trip) {
     const date = dates[d];
     const dayMatches = byDate.get(date);
     const nextDate = dates[d + 1];
-    const nextDayMatches = nextDate ? byDate.get(nextDate) : null;
 
     const nextBeamMap = new Map();
 
-    for (const beamState of beam) {
+        for (const beamState of beam) {
       const dayCandidates = await generateDayCandidates(dayMatches, beamState.currentLoc, beamState.currentTime);
 
       for (const cand of dayCandidates) {
+        // Fahrzeit ab dem Ausgangspunkt (bei Folgetagen: ab dem letzten Stadion, inkl. Übernachtungsfahrt)
         const dayTravelMin = await computeDayTravelMin(cand.chain, beamState.currentLoc);
 
-        let overnight = null;
-        let nextLoc = beamState.currentLoc;
-        let nextTime = beamState.currentTime;
-        let transitionTravelMin = 0;
-        let tightAdd = 0;
-        let infeasibleAdd = 0;
-
-        if (nextDayMatches) {
-          const lastOfDay = cand.chain.length > 0 ? cand.chain[cand.chain.length - 1] : null;
-          const nextGuess = nextDayMatches[0];
-
-          if (lastOfDay && nextGuess) {
-            const override = trip.overnightOverrides[lastOfDay.id];
-            const plan = await planOvernight(lastOfDay, nextGuess, false);
-            transitionTravelMin = plan.totalTravelMin;
-            if (!plan.feasible) infeasibleAdd = 1;
-            else if (plan.extraMinutesUsed > 0) tightAdd = 1;
-
-            if (override) {
-              nextLoc = { lat: override.lat, lng: override.lng };
-              overnight = { fromMatchId: lastOfDay.id, override: true, lat: override.lat, lng: override.lng, name: override.address };
-            } else {
-              nextLoc = { lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng };
-              overnight = { fromMatchId: lastOfDay.id, override: false, lat: plan.overnightPoint.lat, lng: plan.overnightPoint.lng, name: plan.overnightPoint.suggestedName };
-            }
-          }
-          nextTime = timeToDateOnDay(nextDate, state.settings.nextDayStartHour);
+        // Nacht-Bewertung für das TATSÄCHLICH gewählte erste Spiel dieses Tages
+        let tightAdd = 0, infeasibleAdd = 0;
+        const from = beamState.currentLoc.fromMatch;
+        if (from && cand.chain.length > 0) {
+          const first = cand.chain[0];
+          const travel = await getCachedTravelMin(from.lat, from.lng, first.lat, first.lng);
+          const f = from.date !== first.date ? overnightFeasibility(from, first, travel) : { feasible: true, extraMinutesUsed: 0 };
+          if (!f.feasible) infeasibleAdd = 1;
+          else if (f.extraMinutesUsed > 0) tightAdd = 1;
         }
+
+        // Ausgangspunkt für den Folgetag: letztes gespieltes Stadion bzw. manuell gesetzte Übernachtung
+        let nextLoc = beamState.currentLoc, overnight = null;
+        const lastOfDay = cand.chain.length > 0 ? cand.chain[cand.chain.length - 1] : null;
+        if (lastOfDay) {
+          const override = trip.overnightOverrides[lastOfDay.id];
+          nextLoc = override
+            ? { lat: override.lat, lng: override.lng }
+            : { lat: lastOfDay.lat, lng: lastOfDay.lng, fromMatch: lastOfDay };
+          overnight = {
+            fromMatchId: lastOfDay.id, override: !!override,
+            lat: nextLoc.lat, lng: nextLoc.lng, name: override ? override.address : lastOfDay.stadium
+          };
+        }
+        const nextTime = nextDate ? timeToDateOnDay(nextDate, state.settings.nextDayStartHour) : beamState.currentTime;
 
         const newDayChains = [...beamState.dayChains, { date, chain: cand.chain, dropped: cand.dropped, overnightAfter: overnight }];
         const signature = newDayChains.map(dc => dayChainSignature(dc.chain)).join('|');
@@ -1592,7 +1604,7 @@ async function buildOptimizedScheduleAlternatives(trip) {
           dayChains: newDayChains,
           currentLoc: nextLoc,
           currentTime: nextTime,
-          totalTravelMin: beamState.totalTravelMin + dayTravelMin + transitionTravelMin,
+          totalTravelMin: beamState.totalTravelMin + dayTravelMin,
           tightNights: beamState.tightNights + tightAdd,
           infeasibleNights: beamState.infeasibleNights + infeasibleAdd,
           matchCount: beamState.matchCount + cand.chain.length,
@@ -1828,10 +1840,10 @@ async function renderDayTiles(plan, trip) {
       currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
     }
 
-    const nextDc = plan.dayChains[d + 1];
+    const nextDc = plan.dayChains.slice(d + 1).find(x => x.chain.length > 0);
     if (nextDc && dc.chain.length > 0) {
       const lastMatch = dc.chain[dc.chain.length - 1];
-      const nextMatchGuess = nextDc.chain.length > 0 ? nextDc.chain[0] : null;
+      const nextMatchGuess = nextDc.chain[0];
 
       if (nextMatchGuess) {
         const override = trip.overnightOverrides[lastMatch.id];
@@ -1852,13 +1864,17 @@ async function renderDayTiles(plan, trip) {
         const legDeeplink2 = generateGoogleDeeplink(overnightLoc.lat, overnightLoc.lng, nextMatchGuess.lat, nextMatchGuess.lng);
         const hotelLink = generateHotelSearchLink(overnightLoc.lat, overnightLoc.lng);
         const inputId = `overnightInput_${lastMatch.id}`;
+        const free = opPlan.gapDays - 1;
+        const nightText = opPlan.gapDays >= 2
+          ? `Zwischen den Spielen ${free === 1 ? "liegt 1 freier Tag" : `liegen ${free} freie Tage`} – die Anreise ist ohne Nachtfahrt möglich.`
+          : `Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.`;
 
         tileBody += `
           <div class="timeline-item overnight-block">
             <h4>🌙 Übernachtung erforderlich</h4>
             <p class="print-only"><strong>Adresse:</strong> ${escapeHtml(overnightLoc.name)}</p>
             ${warningHtml}
-            <p>Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.</p>
+            <p>${nightText}</p>
             ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
             <div class="form-row">
               <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(overnightLoc.name)}" />
