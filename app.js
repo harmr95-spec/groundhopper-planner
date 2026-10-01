@@ -1732,8 +1732,6 @@ async function buildOptimizedScheduleAlternatives(trip) {
         if (from && cand.chain.length > 0) {
           const first = cand.chain[0];
           const f = from.date !== first.date ? await nightCheck(origin, first) : { feasible: true, extraMinutesUsed: 0 };
-            ? overnightFeasibility(from, first, travel, !!origin.viaOvernight)
-            : { feasible: true, extraMinutesUsed: 0 };
           if (!f.feasible) infeasibleAdd = 1;
           else if (f.extraMinutesUsed > 0) tightAdd = 1;
         }
