@@ -15,6 +15,10 @@ let state = {
 
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
+const routeCache = new Map();        // Routen inkl. Geometrie/Steps, nur echte OSRM-Ergebnisse
+const reverseGeoCache = new Map();   // Ortsnamen für Übernachtungspunkte
+let renderRunId = 0;                 // verwirft veraltete Renderings (Planwechsel während des Ladens)
+let calcRunId = 0;                   // verwirft Ergebnisse veralteter Berechnungen
 let editingMatchId = null;
 let currentOptimizationMode = "most_games";
 let lastAutoFilledStadium = "";
@@ -1031,12 +1035,63 @@ async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = fals
   return { durationMin: estimateTravelMin(startLat, startLng, endLat, endLng), geometry: null, steps: null, estimated: true };
 }
 
+const travelKey = (lat1, lng1, lat2, lng2) =>
+  `${lat1.toFixed(4)},${lng1.toFixed(4)}|${lat2.toFixed(4)},${lng2.toFixed(4)}`;
+
 async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
-  const key = `${lat1.toFixed(4)},${lng1.toFixed(4)}|${lat2.toFixed(4)},${lng2.toFixed(4)}`;
+  const key = travelKey(lat1, lng1, lat2, lng2);
   if (travelCache.has(key)) return travelCache.get(key);
   const result = await getOSRMRoute(lat1, lng1, lat2, lng2);
   if (!result.estimated) travelCache.set(key, result.durationMin); // Schätzwerte nie cachen
   return result.durationMin;
+}
+
+// Holt die Fahrzeit-Matrix für alle Punkte mit EINEM OSRM-Table-Request statt n² Einzelrequests.
+// Schlägt der Request fehl, greifen die Einzelabfragen (inkl. Schätzung und Warnbanner) wie bisher.
+async function prefetchTravelMatrix(points) {
+  const seen = new Set(), unique = [];
+  for (const p of points) {
+    const k = `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
+    if (!seen.has(k)) { seen.add(k); unique.push(p); }
+  }
+  if (unique.length < 2 || unique.length > 60) return;
+  const missing = unique.some((a, i) => unique.some((b, j) =>
+    i !== j && !travelCache.has(travelKey(a.lat, a.lng, b.lat, b.lng))));
+  if (!missing) return;
+  const coords = unique.map(p => `${p.lng},${p.lat}`).join(";");
+  try {
+    const res = await fetch(`https://router.project-osrm.org/table/v1/driving/${coords}?annotations=duration`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.code !== "Ok" || !Array.isArray(data.durations)) return;
+    unique.forEach((a, i) => unique.forEach((b, j) => {
+      const sec = data.durations[i] && data.durations[i][j];
+      if (i !== j && Number.isFinite(sec)) travelCache.set(travelKey(a.lat, a.lng, b.lat, b.lng), Math.round(sec / 60));
+    }));
+  } catch (err) {
+    console.error("OSRM Table Error:", err);
+  }
+}
+
+// Route mit Geometrie (und optional Steps) – nur echte Ergebnisse werden gecacht.
+async function getCachedRoute(lat1, lng1, lat2, lng2, withSteps = false) {
+  const key = travelKey(lat1, lng1, lat2, lng2);
+  const hit = routeCache.get(key);
+  if (hit && (!withSteps || hit.steps)) return hit;
+  const result = await getOSRMRoute(lat1, lng1, lat2, lng2, withSteps);
+  if (!result.estimated) {
+    routeCache.set(key, result);
+    travelCache.set(key, result.durationMin);
+  }
+  return result;
+}
+
+async function cachedReverseGeocode(lat, lng) {
+  const key = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+  if (reverseGeoCache.has(key)) return reverseGeoCache.get(key);
+  const name = await reverseGeocode(lat, lng, 10);
+  if (name) reverseGeoCache.set(key, name);
+  return name;
 }
 
 function findPointAtTime(steps, targetSec) {
@@ -1095,6 +1150,7 @@ function compareDpStates(candidate,current,ref){
 async function computeDayDP(segment, startLoc, startTime) {
   const n = segment.length;
   const dp = new Array(n).fill(null);
+  await prefetchTravelMatrix([startLoc, ...segment]);
 
   for (let j = 0; j < n; j++) {
     const m = segment[j];
@@ -1227,13 +1283,13 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
 }
 
 // ---------- Übernachtungslogik ----------
-async function planOvernight(prevMatch, nextMatch) {
+async function planOvernight(prevMatch, nextMatch, withName = true) {
   const prevEnd = calculateMatchEndTime(prevMatch);
   const nextKickoff = new Date(`${nextMatch.date}T${nextMatch.time}`);
   const arrBuffer = nextMatch.customArrivalBuffer ?? state.settings.arrivalBufferMin;
   const requiredArrival = new Date(nextKickoff.getTime() - arrBuffer * 60000);
 
-  const osrm = await getOSRMRoute(prevMatch.lat, prevMatch.lng, nextMatch.lat, nextMatch.lng, true);
+  const osrm = await getCachedRoute(prevMatch.lat, prevMatch.lng, nextMatch.lat, nextMatch.lng, true);
   const totalTravelMin = osrm.durationMin;
 
   const nightCutoff = timeToDateOnDay(prevMatch.date, state.settings.maxNightDriveTime);
@@ -1269,7 +1325,7 @@ async function planOvernight(prevMatch, nextMatch) {
       lat: prevMatch.lat + (nextMatch.lat - prevMatch.lat) * fraction,
       lng: prevMatch.lng + (nextMatch.lng - prevMatch.lng) * fraction
     };
-    const placeName = await reverseGeocode(coord.lat, coord.lng, 10);
+    const placeName = withName ? await cachedReverseGeocode(coord.lat, coord.lng) : null;
     overnightPoint = {
       lat: coord.lat,
       lng: coord.lng,
@@ -1513,7 +1569,7 @@ async function buildOptimizedScheduleAlternatives(trip) {
 
           if (lastOfDay && nextGuess) {
             const override = trip.overnightOverrides[lastOfDay.id];
-            const plan = await planOvernight(lastOfDay, nextGuess);
+            const plan = await planOvernight(lastOfDay, nextGuess, false);
             transitionTravelMin = plan.totalTravelMin;
             if (!plan.feasible) infeasibleAdd = 1;
             else if (plan.extraMinutesUsed > 0) tightAdd = 1;
@@ -1582,6 +1638,7 @@ async function calculateRoute() {
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
   const switcherEl = document.getElementById("planSwitcher");
+  const button = document.getElementById("calculateRouteButton");
 
   if (!trip.startAddress || trip.matches.length === 0) {
     alert("Bitte gib eine Startadresse und mindestens ein Spiel ein.");
@@ -1591,35 +1648,49 @@ async function calculateRoute() {
   currentOptimizationMode = document.getElementById("optimizationMode")?.value || "most_games";
   trip.optimizationMode = currentOptimizationMode;
 
+  const runId = ++calcRunId;
+  if (button) { button.disabled = true; button.textContent = "Berechne …"; }
+
   timelineEl.innerHTML = "Berechne optimale Route, Spiele-Anzahl und Alternativen...";
   droppedEl.innerHTML = "";
   if (switcherEl) switcherEl.innerHTML = "";
   routeLayer.clearLayers();
-  travelCache.clear();
   routingEstimated = false;
 
-  currentPlans = await buildOptimizedScheduleAlternatives(trip);
+  try {
+    const plans = await buildOptimizedScheduleAlternatives(trip);
+    if (runId !== calcRunId) return; // eine neuere Berechnung hat übernommen
+    currentPlans = plans;
 
-  if (!currentPlans || currentPlans.length === 0) {
-    timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
-    lastSelectedMatchIds = new Set();
-    updateMapMarkers();
-    return;
+    if (!currentPlans || currentPlans.length === 0) {
+      timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
+      lastSelectedMatchIds = new Set();
+      updateMapMarkers();
+      return;
+    }
+
+    // Alternativen auch im Trip-Objekt ablegen (inkl. Stand der Einstellungen für den Veraltet-Hinweis)
+    trip.plans = currentPlans;
+    trip.plansSettingsKey = JSON.stringify(state.settings);
+
+    let idx = 0;
+    if (trip.selectedPlanSignature) {
+      const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
+      if (found !== -1) idx = found;
+    }
+    currentPlanIndex = idx;
+    trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
+    saveLocalStorage();
+
+    await renderCurrentPlan();
+  } catch (err) {
+    console.error("Berechnungsfehler:", err);
+    if (runId === calcRunId) {
+      timelineEl.innerHTML = '<div class="danger-banner">❌ Bei der Berechnung ist ein Fehler aufgetreten. Details stehen in der Browser-Konsole.</div>';
+    }
+  } finally {
+    if (runId === calcRunId && button) { button.disabled = false; button.textContent = "Route berechnen"; }
   }
-
-  // Alternativen auch im Trip-Objekt ablegen
-  trip.plans = currentPlans;
-
-  let idx = 0;
-  if (trip.selectedPlanSignature) {
-    const found = currentPlans.findIndex(p => p.signature === trip.selectedPlanSignature);
-    if (found !== -1) idx = found;
-  }
-  currentPlanIndex = idx;
-  trip.selectedPlanSignature = currentPlans[currentPlanIndex].signature;
-  saveLocalStorage();
-
-  await renderCurrentPlan();
 }
 
 function choosePlan(delta) {
@@ -1652,12 +1723,17 @@ function renderPlanSwitcher(plan) {
   const el = document.getElementById("planSwitcher");
   if (!el) return;
 
+  const trip = getActiveTrip();
+  const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== JSON.stringify(state.settings)
+    ? '<div class="warning-banner">⚠️ Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen" erneut ausführen.</div>'
+    : '';
+
   if (!currentPlans || currentPlans.length <= 1) {
-    el.innerHTML = `<div class="plan-switcher-single">${planStatsHtml(plan)}</div>`;
+    el.innerHTML = stale + `<div class="plan-switcher-single">${planStatsHtml(plan)}</div>`;
     return;
   }
 
-  el.innerHTML = `
+  el.innerHTML = stale + `
     <div class="plan-switcher">
       <button class="btn btn-small" onclick="choosePlan(-1)" aria-label="Vorherige Alternative">←</button>
       <div class="plan-switcher-info">
@@ -1693,6 +1769,7 @@ function planStatsHtml(plan) {
 async function renderDayTiles(plan, trip) {
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
+  const myRun = ++renderRunId;
   routeLayer.clearLayers();
 
   let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
@@ -1719,7 +1796,8 @@ async function renderDayTiles(plan, trip) {
 
     for (let i = 0; i < dc.chain.length; i++) {
       const match = dc.chain[i];
-      const osrm = await getOSRMRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+      const osrm = await getCachedRoute(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
+      if (myRun !== renderRunId) return;
 
       if (osrm.geometry) {
         L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
@@ -1758,6 +1836,7 @@ async function renderDayTiles(plan, trip) {
       if (nextMatchGuess) {
         const override = trip.overnightOverrides[lastMatch.id];
         const opPlan = await planOvernight(lastMatch, nextMatchGuess);
+        if (myRun !== renderRunId) return;
         const overnightLoc = override
           ? { lat: override.lat, lng: override.lng, name: override.address }
           : { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName };
@@ -1811,6 +1890,7 @@ async function renderDayTiles(plan, trip) {
     `;
   }
 
+    if (myRun !== renderRunId) return;
     const routingWarning = routingEstimated
     ? '<div class="warning-banner">⚠️ Der Routing-Dienst war nicht erreichbar oder lieferte keine Route – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.</div>'
     : '';
@@ -1866,6 +1946,7 @@ function saveSettings() {
   state.settings.groundhopperWeights = {highlight:parseFloat(document.getElementById("weightHighlight").value)||0,stage:parseFloat(document.getElementById("weightStage").value)||0,competition:parseFloat(document.getElementById("weightCompetition").value)||0,stadium:parseFloat(document.getElementById("weightStadium").value)||0};
 
   saveLocalStorage();
+  if (currentPlans && currentPlans[currentPlanIndex]) renderPlanSwitcher(currentPlans[currentPlanIndex]);
   toggleSettingsModal();
 }
 
