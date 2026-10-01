@@ -708,6 +708,9 @@ function deleteMatch(matchId) {
   const trip = getActiveTrip();
   trip.matches = trip.matches.filter(m => m.id !== matchId);
   delete trip.overnightOverrides[matchId];
+    Object.keys(trip.overnightOverrides).forEach(k => {
+    if (k.startsWith(`${matchId}@`)) delete trip.overnightOverrides[k];
+  });
   
   delete trip.plans;
   currentPlans = null;
@@ -864,9 +867,13 @@ function normalizeImportedTrip(rawTrip, fallbackPlans) {
 
   const overnightOverrides = {};
   const rawOverrides = rawTrip.overnightOverrides && typeof rawTrip.overnightOverrides === "object" ? rawTrip.overnightOverrides : {};
-  Object.entries(rawOverrides).forEach(([oldId, o]) => {
+  Object.entries(rawOverrides).forEach(([oldKey, o]) => {
+    const [oldId, date] = String(oldKey).split("@");
+    if (date !== undefined && !isValidDate(date)) return;
     const target = byOldId.get(oldId), lat = o && toNum(o.lat), lng = o && toNum(o.lng);
-    if (target && o && lat !== null && lng !== null) overnightOverrides[target.id] = { address: toText(o.address), lat, lng };
+    if (target && o && lat !== null && lng !== null) {
+      overnightOverrides[date !== undefined ? `${target.id}@${date}` : target.id] = { address: toText(o.address), lat, lng };
+    }
   });
 
   const mustTotal = matches.filter(m => m.mustAttend).length;
@@ -1115,37 +1122,48 @@ function addDaysIso(dateStr, delta) {
 }
 
 // Verteilt die Anreise bei freien Tagen auf Fahrtage mit Zwischenstopps.
-// Am Spieltag wird nur gefahren, was bis zur Ankunft am Morgen passt; der Rest wird gleichmäßig
-// auf die freien Tage davor verteilt (Abfahrt jeweils zum frühesten Morgenstart).
-async function planDrivingDays(originLoc, nextMatch, gapDays) {
-  const route = await getCachedRoute(originLoc.lat, originLoc.lng, nextMatch.lat, nextMatch.lng, true);
-  const totalMin = route.durationMin;
+// Vom aktuellen Ort aus wird jeweils neu gerechnet: Was am Spieltag morgens noch passt, wird dort gefahren,
+// der Rest gleichmäßig auf die letzten freien Tage davor. Gesetzte Stopps (Overrides) ersetzen den Vorschlag,
+// die Tage danach rechnen ab dort weiter.
+async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
   const arrBuffer = nextMatch.customArrivalBuffer ?? state.settings.arrivalBufferMin;
   const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
   const morningStart = timeToDateOnDay(nextMatch.date, state.settings.nextDayStartHour);
   const lastDayMin = Math.max(0, (requiredArrival - morningStart) / 60000);
-  const earlierMin = Math.max(0, totalMin - lastDayMin);
-  const freeDays = Math.max(0, gapDays - 1);
-  const dayCount = earlierMin > 0 ? Math.max(1, Math.min(freeDays, Math.ceil(earlierMin / DAILY_DRIVE_MIN))) : 0;
-  const perDay = dayCount ? Math.ceil(earlierMin / dayCount) : 0;
 
   const days = [];
-  let from = { lat: originLoc.lat, lng: originLoc.lng, name: originLoc.name };
-  for (let j = 1; j <= dayCount; j++) {
-    const cum = Math.min(totalMin, perDay * j);
-    const fraction = Math.min(1, cum / Math.max(1, totalMin));
-    const p = findPointAtTime(route.steps, cum * 60) || {
-      lat: originLoc.lat + (nextMatch.lat - originLoc.lat) * fraction,
-      lng: originLoc.lng + (nextMatch.lng - originLoc.lng) * fraction
-    };
-    const name = (await cachedReverseGeocode(p.lat, p.lng)) || `Ungefähr ${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`;
-    const to = { lat: p.lat, lng: p.lng, name };
-    days.push({
-      date: addDaysIso(nextMatch.date, -(dayCount - j + 1)),
-      driveMin: cum - Math.min(totalMin, perDay * (j - 1)),
-      from, to
-    });
-    from = to;
+  let cur = { lat: originLoc.lat, lng: originLoc.lng, name: originLoc.name };
+  let curDate = lastMatch.date;
+
+  for (let guard = 0; guard < 14; guard++) {
+    const freeDays = daysBetween(curDate, nextMatch.date) - 1;
+    if (freeDays <= 0) break;
+    const route = await getCachedRoute(cur.lat, cur.lng, nextMatch.lat, nextMatch.lng, true);
+    const earlierMin = Math.max(0, route.durationMin - lastDayMin);
+    if (earlierMin <= 0) break; // der Rest passt in den Spieltag
+
+    const k = Math.max(1, Math.min(freeDays, Math.ceil(earlierMin / DAILY_DRIVE_MIN)));
+    const perDay = Math.ceil(earlierMin / k);
+    const date = addDaysIso(nextMatch.date, -k); // frühester der noch nötigen Fahrtage
+    const key = `${lastMatch.id}@${date}`;
+    const ov = trip.overnightOverrides[key];
+
+    let to;
+    if (ov) {
+      to = { lat: ov.lat, lng: ov.lng, name: ov.address };
+    } else {
+      const cum = Math.min(route.durationMin, perDay);
+      const fraction = Math.min(1, cum / Math.max(1, route.durationMin));
+      const p = findPointAtTime(route.steps, cum * 60) || {
+        lat: cur.lat + (nextMatch.lat - cur.lat) * fraction,
+        lng: cur.lng + (nextMatch.lng - cur.lng) * fraction
+      };
+      const name = (await cachedReverseGeocode(p.lat, p.lng)) || `Ungefähr ${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`;
+      to = { lat: p.lat, lng: p.lng, name };
+    }
+    days.push({ date, key, override: !!ov, from: cur, to });
+    cur = to;
+    curDate = date;
   }
   return days;
 }
@@ -1160,8 +1178,14 @@ async function renderJourneyTiles(days, myRun) {
     if (leg.geometry) L.geoJSON(leg.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
     L.marker([day.to.lat, day.to.lng]).bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
 
+    const driveMin = leg.durationMin;
     const dep = timeToDateOnDay(day.date, state.settings.nextDayStartHour);
-    const arr = new Date(dep.getTime() + day.driveMin * 60000);
+    const arr = new Date(dep.getTime() + driveMin * 60000);
+    const inputId = `driveStopInput_${day.key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const longWarning = driveMin > DAILY_DRIVE_MIN
+      ? `<div class="warning-banner">⚠️ Mehr als ${DAILY_DRIVE_MIN / 60} Stunden Fahrzeit an diesem Tag – ggf. einen früheren Stopp wählen.</div>`
+      : '';
+
     out += `
       <div class="day-tile">
         <div class="day-tile-header">
@@ -1171,14 +1195,21 @@ async function renderJourneyTiles(days, myRun) {
         <div class="day-tile-body">
           <div class="timeline-item">
             <strong>🚗 Fahrt nach ${escapeHtml(day.to.name)}</strong><br>
-            Abfahrt: ${fmt(dep)} Uhr | Fahrzeit: ca. ${day.driveMin} Min.<br>
-            Ankunft: ca. ${fmt(arr)} Uhr<br>
-            <a href="${generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng)}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
+            Abfahrt: ${fmt(dep)} Uhr | Fahrzeit: ca. ${driveMin} Min.<br>
+            Ankunft: ca. ${fmt(arr)} Uhr
+            ${longWarning}
+            <br><a href="${generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng)}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
           </div>
           <div class="timeline-item overnight-block">
-            <h4>🌙 Übernachtung in ${escapeHtml(day.to.name)}</h4>
+            <h4>🌙 Übernachtung</h4>
             <p class="print-only"><strong>Adresse:</strong> ${escapeHtml(day.to.name)}</p>
-            <p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>
+            ${day.override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
+            <p class="settings-hint">Andere Adresse eintragen (z. B. weiter fahren): Die Tage danach rechnen ab dort neu.</p>
+            <div class="form-row">
+              <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(day.to.name)}" />
+              <button class="btn btn-small" onclick="saveOvernightOverride('${day.key}', '${inputId}')">Übernehmen</button>
+              ${day.override ? `<button class="btn btn-small btn-secondary" onclick="clearOvernightOverride('${day.key}')">Vorschlag zurücksetzen</button>` : ''}
+            </div>
             <a href="${generateHotelSearchLink(day.to.lat, day.to.lng)}" target="_blank" class="deeplink-btn hotel-btn">🏨 Unterkünfte hier suchen</a>
           </div>
         </div>
@@ -1414,9 +1445,9 @@ function overnightFeasibility(prevMatch, nextMatch, totalTravelMin, fromOvernigh
 // Startet das Segment an einem Stadion eines früheren Tages (origin.fromMatch), gilt die Nacht-Logik,
 // sonst die einfache Prüfung "Startzeit + Fahrzeit <= Ankunft".
 async function canStartWith(origin, startTime, m, requiredArrival) {
-  const travel = await getCachedTravelMin(origin.lat, origin.lng, m.lat, m.lng);
   const from = origin.fromMatch;
-  if (from && from.date !== m.date) return overnightFeasibility(from, m, travel, !!origin.viaOvernight).feasible;
+  if (from && from.date !== m.date) return (await nightCheck(origin, m)).feasible;
+  const travel = await getCachedTravelMin(origin.lat, origin.lng, m.lat, m.lng);
   const base = from ? calculateMatchEndTime(from) : startTime;
   return new Date(base.getTime() + travel * 60000) <= requiredArrival;
 }
@@ -1452,6 +1483,33 @@ async function planOvernight(prevMatch, nextMatch, withName = true) {
     totalTravelMin,
     overnightPoint
   };
+}
+
+const daysBetween = (a, b) =>
+  Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000);
+
+// Letzter vom Nutzer gesetzter Fahrtag-Stopp zwischen Spiel `from` und Spiel `m` (oder null)
+function latestDrivingOverride(from, m) {
+  const trip = getActiveTrip();
+  const prefix = `${from.id}@`;
+  let best = null;
+  for (const [key, o] of Object.entries((trip && trip.overnightOverrides) || {})) {
+    if (!key.startsWith(prefix)) continue;
+    const date = key.slice(prefix.length);
+    if (date > from.date && date < m.date && (!best || date > best.date)) best = { date, lat: o.lat, lng: o.lng };
+  }
+  return best;
+}
+
+// Nacht-/Anreise-Prüfung zwischen dem Ausgangspunkt (Stadion, Übernachtung oder gesetzter Fahrtag-Stopp)
+// und dem ersten Spiel m eines späteren Tages.
+async function nightCheck(origin, m) {
+  const from = origin.fromMatch;
+  const stop = latestDrivingOverride(from, m);
+  const src = stop || origin;
+  const travel = await getCachedTravelMin(src.lat, src.lng, m.lat, m.lng);
+  const prev = stop ? { ...from, date: stop.date } : from;
+  return overnightFeasibility(prev, m, travel, !!stop || !!origin.viaOvernight);
 }
 
 async function saveOvernightOverride(matchId, inputElId) {
@@ -1670,11 +1728,10 @@ async function buildOptimizedScheduleAlternatives(trip) {
 
         // Nacht-Bewertung für das TATSÄCHLICH gewählte erste Spiel dieses Tages
         let tightAdd = 0, infeasibleAdd = 0;
-                const origin = beamState.currentLoc, from = origin.fromMatch;
+        const origin = beamState.currentLoc, from = origin.fromMatch;
         if (from && cand.chain.length > 0) {
           const first = cand.chain[0];
-          const travel = await getCachedTravelMin(origin.lat, origin.lng, first.lat, first.lng);
-          const f = from.date !== first.date
+          const f = from.date !== first.date ? await nightCheck(origin, first) : { feasible: true, extraMinutesUsed: 0 };
             ? overnightFeasibility(from, first, travel, !!origin.viaOvernight)
             : { feasible: true, extraMinutesUsed: 0 };
           if (!f.feasible) infeasibleAdd = 1;
@@ -1968,7 +2025,7 @@ async function renderDayTiles(plan, trip) {
       // Freie Tage zwischen den Spielen: Anreise auf Fahrtage mit Zwischenstopps verteilen
       let drivingDays = [];
       if (opPlan.gapDays >= 2) {
-        drivingDays = await planDrivingDays(overnightLoc, nextMatchGuess, opPlan.gapDays);
+        drivingDays = await planDrivingDays(overnightLoc, lastMatch, nextMatchGuess, trip);
         if (myRun !== renderRunId) return;
         journeyHtml = await renderJourneyTiles(drivingDays, myRun);
         if (journeyHtml === null) return;
