@@ -1114,8 +1114,7 @@ function renderMatchList() {
     .map(m => {
       let statusClass = "";
       let reasonHtml = "";
-      const inActivePlan = !!activePlan && activePlan.selected.some(sm => sm.id === m.id);
-
+    
       if (hasNoTickets(m)) {
         statusClass = "status-no-tickets";
         reasonHtml = `<div class="reason">🚫 Keine Tickets bekommen – wird bei der Berechnung nicht berücksichtigt.</div>`;
@@ -1144,12 +1143,8 @@ function renderMatchList() {
         }
       }
 
-      if (hasTickets(m) && activePlan && !inActivePlan) {
-        reasonHtml += `<div class="warning-banner ticket-warning">⚠️ Tickets gekauft, aber nicht im aktiven Plan – bitte „Route berechnen“ erneut ausführen.</div>`;
-      }
-
       const ticketButtons = hasNoTickets(m)
-        ? `<button onclick="restoreTickets('${m.id}')" class="btn btn-small btn-ticket" title="Spiel wieder für die Berechnung freigeben">↩️ Doch Tickets bekommen</button>`
+        ? `<button onclick="restoreTickets('${m.id}')" class="btn btn-small btn-ticket" title="Spiel als „Tickets gekauft“ markieren">↩️ Doch Tickets bekommen</button>`
         : hasTickets(m)
           ? `<button onclick="setTicketStatus('${m.id}', null)" class="btn btn-small btn-ticket" title="Markierung „Tickets gekauft“ entfernen">🎟️ Gekauft ✓ – zurücksetzen</button>`
           : `<button onclick="setTicketStatus('${m.id}', 'purchased')" class="btn btn-small btn-ticket" title="Spiel wird bei jeder Berechnung fest eingeplant">🎟️ Tickets gekauft</button>
@@ -2239,15 +2234,8 @@ function restoreTickets(matchId) {
   const trip = getActiveTrip();
   const match = trip && trip.matches.find(m => m.id === matchId);
   if (!match) return;
-  match.ticketStatus = null;
-  refreshPlanTicketCounts(trip);
-  saveLocalStorage();
-  if (currentPlans && currentPlans.length) {
-    pendingPlanMessage = { type: "info", text: `ℹ️ ${shortMatchLabel(match)} ist wieder verfügbar. Der Plan bleibt unverändert – mit „Route berechnen“ wird das Spiel wieder berücksichtigt.` };
-    renderCurrentPlan();
-  } else {
-    renderActiveTrip();
-  }
+  // Wer doch Tickets bekommen hat, hat sie gekauft – also direkt so markieren.
+  setTicketStatus(matchId, "purchased");
 }
 
 function setTicketStatus(matchId, status) {
