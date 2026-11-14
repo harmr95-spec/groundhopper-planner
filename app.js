@@ -33,6 +33,7 @@ let currentPlanIndex = 0;    // Index des gerade angezeigten Plans in currentPla
 const MAX_DAY_ALTERNATIVES = 3; // Wie viele Ketten-Varianten pro Tag als Zweige verfolgt werden
 const BEAM_WIDTH = 6;           // Wie viele Trip-Kandidaten zwischen den Tagen mitgeführt werden
 const MAX_PLANS = 4;            // Wie viele Alternativen dem Nutzer am Ende angezeigt werden
+const MIN_PLAN_SHARE = 0.5;     // Alternativen mit weniger als 50 % der Spiele der besten Alternative werden ausgeblendet
 
 const LEAGUE_NAMES = {
   de: { 1: "Bundesliga", 2: "2. Bundesliga", 3: "3. Liga", 4: "Regionalliga", 5: "Oberliga", 6: "Landesliga o. niedriger" },
@@ -1978,6 +1979,25 @@ function primaryPlanDescription() {
   return "Beste gefundene Kombination nach Tickets, Highlightspielen, Spielanzahl und Fahrzeit.";
 }
 
+// Blendet leere und fast leere Alternativen aus (Liste muss bereits nach Güte sortiert sein):
+//  - Alternativen ohne Spiel,
+//  - Alternativen mit weniger als MIN_PLAN_SHARE der Spiele der besten Alternative,
+//  - Alternativen, deren Spiele komplett in einer besser bewerteten Alternative mit mehr Spielen enthalten sind.
+// `keep` (z. B. der gerade ausgewählte Plan) bleibt immer erhalten.
+function filterUsefulPlans(plans, keep = null) {
+  const best = Math.max(0, ...plans.map(p => p.matchCount));
+  const minCount = Math.ceil(best * MIN_PLAN_SHARE);
+  const result = [];
+  for (const p of plans) {
+    const ids = p.selected.map(m => m.id);
+    const dominated = result.some(q =>
+      q.matchCount > p.matchCount && ids.every(id => q.selected.some(s => s.id === id)));
+    const useful = p.matchCount > 0 && p.matchCount >= minCount && !dominated;
+    if (useful || p === keep) result.push(p);
+  }
+  return result;
+}
+
 // Beschreibt Alternative 2..n als Unterschied zu Alternative 1.
 function annotatePlanDiffs(plans) {
   plans.forEach((p, i) => {
@@ -2035,7 +2055,7 @@ async function buildOptimizedScheduleAlternatives(trip) {
   const finalized = beam.map(b => finalizePlanState(b, trip));
   const finalReferenceCount = Math.max(1, ...finalized.map(plan => plan.matchCount));
   finalized.sort((a, b) => comparePlans(a, b, finalReferenceCount));
-  const diverse = finalized.slice(0, MAX_PLANS);
+  const diverse = filterUsefulPlans(finalized).slice(0, MAX_PLANS);
 
   if (diverse.length) diverse[0].description = primaryPlanDescription();
   annotatePlanDiffs(diverse);
@@ -2188,6 +2208,8 @@ async function markNoTickets(matchId) {
       plans.push(repaired);
     }
     currentOptimizationMode = active.optimizationMode || "most_games";
+    const activeRepaired = plans.find(p => p.signature === activeSignature);
+    plans.splice(0, plans.length, ...filterUsefulPlans(plans, activeRepaired));
     annotatePlanDiffs(plans);
 
     currentPlans = plans;
