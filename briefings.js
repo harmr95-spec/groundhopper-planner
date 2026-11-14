@@ -14,6 +14,8 @@
   const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
   const PAUSE_BETWEEN_REQUESTS_MS = 1500;  // schont das kostenlose Kontingent
   const MAX_RETRY_WAIT_MS = 65000;         // so lange wird bei "Kontingent kurz erschöpft" max. gewartet
+  const REQUEST_TIMEOUT_MS = 180000;       // neuere Modelle "denken" vor der Antwort – großzügiges Zeitlimit
+  let thinkingUnsupported = false;         // ältere Modelle kennen thinkingLevel nicht
 
   let progress = null; // { done, total, current } während der Erstellung
 
@@ -74,29 +76,47 @@
   class GeminiError extends Error {}
 
   async function callGemini(ai, prompt, systemText, { json = true, retries = 1 } = {}) {
-    const body = {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, ...(json ? { responseMimeType: "application/json" } : {}) }
+    const buildBody = () => {
+      const generationConfig = { temperature: 0.4, ...(json ? { responseMimeType: "application/json" } : {}) };
+      // Kurz "nachdenken" lassen: deutlich schnellere Antworten bei Fakten-Texten
+      if (!thinkingUnsupported) generationConfig.thinkingConfig = { thinkingLevel: "low" };
+      const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig };
+      if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
+      return JSON.stringify(body);
     };
-    if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
 
     for (let attempt = 0; ; attempt++) {
       let res;
+      const started = Date.now();
       try {
-        res = await fetchWithTimeout(`${API_BASE}${encodeURIComponent(ai.model)}:generateContent`, 90000, {
+        res = await fetchWithTimeout(`${API_BASE}${encodeURIComponent(ai.model)}:generateContent`, REQUEST_TIMEOUT_MS, {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": ai.apiKey },
-          body: JSON.stringify(body)
+          body: buildBody()
         });
       } catch (err) {
-        throw new GeminiError("Gemini ist nicht erreichbar (Netzwerk oder Zeitüberschreitung).");
+        console.error("Gemini-Anfrage fehlgeschlagen:", err);
+        if (err && err.name === "AbortError") {
+          throw new GeminiError(`Gemini hat nach ${Math.round((Date.now() - started) / 1000)} Sekunden nicht geantwortet. Bitte erneut versuchen oder in den Einstellungen ein schnelleres Modell (z. B. ein „flash-lite“-Modell) eintragen.`);
+        }
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          throw new GeminiError("Keine Internetverbindung.");
+        }
+        throw new GeminiError("Die Verbindung zu Gemini wurde blockiert (generativelanguage.googleapis.com). Häufige Ursache: ein Werbe-/Tracking-Blocker oder eine Firewall – bitte für diese Seite deaktivieren und erneut versuchen.");
       }
       let data = null;
       try { data = await res.json(); } catch (e) { /* kein JSON */ }
 
+      // Modell kennt die Denk-Einstellung nicht -> ohne erneut versuchen
+      if (res.status === 400 && !thinkingUnsupported && /thinking/i.test((data && data.error && data.error.message) || "")) {
+        thinkingUnsupported = true;
+        attempt--;
+        continue;
+      }
+
       if (res.ok) {
         const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-        const text = parts ? parts.map(p => p.text || "").join("") : "";
+        const text = parts ? parts.filter(p => !p.thought).map(p => p.text || "").join("") : "";
         if (!text) throw new GeminiError("Gemini hat keine Antwort geliefert (evtl. vom Inhaltsfilter blockiert).");
         return text;
       }
