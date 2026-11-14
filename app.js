@@ -1007,7 +1007,12 @@ function normalizeImportedTrip(rawTrip, fallbackPlans) {
   Object.entries(rawOverrides).forEach(([oldKey, o]) => {
     const [oldId, date] = String(oldKey).split("@");
     if (date !== undefined && !isValidDate(date)) return;
-    const target = byOldId.get(oldId), lat = o && toNum(o.lat), lng = o && toNum(o.lng);
+    const lat = o && toNum(o.lat), lng = o && toNum(o.lng);
+    if (oldKey === `${ARRIVAL_STOP_PREFIX}${date}` && o && lat !== null && lng !== null) {
+      overnightOverrides[oldKey] = { address: toText(o.address), lat, lng };
+      return;
+    }
+    const target = byOldId.get(oldId);
     if (target && o && lat !== null && lng !== null) {
       overnightOverrides[date !== undefined ? `${target.id}@${date}` : target.id] = { address: toText(o.address), lat, lng };
     }
@@ -1350,7 +1355,7 @@ async function renderJourneyTiles(days, myRun) {
       <div class="day-tile">
         <div class="day-tile-header">
           <h3>${formatDateLong(day.date)}</h3>
-          <span class="tile-changed-badge">🚗 Fahrtag</span>
+          <span class="tile-changed-badge">${day.label || "🚗 Fahrtag"}</span>
         </div>
         <div class="day-tile-body">
           <div class="timeline-item">
@@ -1614,7 +1619,48 @@ async function canStartWith(origin, startTime, m, requiredArrival) {
   if (from && from.date !== m.date) return (await nightCheck(origin, m)).feasible;
   const travel = await getCachedTravelMin(origin.lat, origin.lng, m.lat, m.lng);
   const base = from ? calculateMatchEndTime(from) : startTime;
-  return new Date(base.getTime() + travel * 60000) <= requiredArrival;
+  if (new Date(base.getTime() + travel * 60000) <= requiredArrival) return true;
+  // Start von zu Hause: ggf. mit Anreise am Vortag
+  if (!from && origin.arrivalDay && (origin.arrivalDay === "all" || isForced(m))) {
+    return arrivalDayFeasible(origin, m);
+  }
+  return false;
+}
+
+// ---------- Anreisetag (Anreise am Vortag von zu Hause) ----------
+// Gilt nur für das erste Spiel ab der Startadresse:
+//  - Highlightspiele und Spiele mit gekauften Tickets dürfen immer einen Anreisetag nutzen,
+//  - ist an einem Tag KEIN Spiel am selben Tag von zu Hause erreichbar, gilt der Anreisetag für alle Spiele des Tages.
+const ARRIVAL_STOP_PREFIX = "__start@";
+const arrivalDayKey = matchDate => `${ARRIVAL_STOP_PREFIX}${addDaysIso(matchDate, -1)}`;
+
+function morningWindowMin(m) {
+  return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, state.settings.nextDayStartHour)) / 60000);
+}
+
+// Machbar mit Anreisetag? Am Vortag bis zu DAILY_DRIVE_MIN fahren, Rest am Spieltag morgens.
+// Ist für den Anreisetag eine eigene Übernachtungsadresse gesetzt, zählt die Fahrt ab dort.
+async function arrivalDayFeasible(home, m) {
+  const trip = getActiveTrip();
+  const stop = trip && trip.overnightOverrides[arrivalDayKey(m.date)];
+  if (stop) return (await getCachedTravelMin(stop.lat, stop.lng, m.lat, m.lng)) <= morningWindowMin(m);
+  return (await getCachedTravelMin(home.lat, home.lng, m.lat, m.lng)) <= DAILY_DRIVE_MIN + morningWindowMin(m);
+}
+
+// Am selben Tag (ab Morgen-Startzeit) von zu Hause erreichbar?
+async function reachableSameDayFromHome(home, m) {
+  return (await getCachedTravelMin(home.lat, home.lng, m.lat, m.lng)) <= morningWindowMin(m);
+}
+
+// Startpunkt "zu Hause" für einen Spieltag, inkl. Anreisetag-Regel.
+async function homeStartLoc(trip, dayMatches) {
+  const home = { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
+  await prefetchTravelMatrix([home, ...dayMatches]);
+  let anySameDay = false;
+  for (const m of dayMatches) {
+    if (await reachableSameDayFromHome(home, m)) { anySameDay = true; break; }
+  }
+  return { ...home, arrivalDay: anySameDay ? "forced" : "all" };
 }
 
 async function planOvernight(prevMatch, nextMatch, withName = true) {
@@ -1971,7 +2017,8 @@ async function buildOptimizedScheduleAlternatives(trip) {
 
     for (const beamState of beam) {
       if (myRun !== calcRunId) throw new Error("abgebrochen");
-      const dayCandidates = await generateDayCandidates(dayMatches, beamState.currentLoc, beamState.currentTime);
+      const startLoc = beamState.currentLoc.fromMatch ? beamState.currentLoc : await homeStartLoc(trip, dayMatches);
+      const dayCandidates = await generateDayCandidates(dayMatches, startLoc, beamState.currentTime);
 
       for (const cand of dayCandidates) {
         if (myRun !== calcRunId) throw new Error("abgebrochen");
@@ -2029,7 +2076,7 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
       const prevDc = dayChains.slice(0, dayIdx).reverse().find(x => x.chain.length > 0);
       startLoc = prevDc
         ? overnightOrigin(trip, prevDc.chain[prevDc.chain.length - 1])
-        : { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
+        : await homeStartLoc(trip, planningMatches(trip).filter(m => m.date === dc.date));
       startTime = morning;
     }
 
@@ -2379,9 +2426,48 @@ async function renderDayTiles(plan, trip) {
   const allDropped = [];
   const drivenDates = new Set(); // Tage, die als Fahrtag gezeigt werden
 
+  // Anreisetag: Ist das erste eingeplante Spiel nicht am selben Tag von zu Hause erreichbar,
+  // wird am Vortag angereist (Übernachtung in Stadionnähe bzw. nach max. 12 h Fahrt).
+  let arrivalDay = null;
+  const firstDc = plan.dayChains.find(x => x.chain.length > 0);
+  if (firstDc && !(await reachableSameDayFromHome(currentLoc, firstDc.chain[0]))) {
+    const first = firstDc.chain[0];
+    const date = addDaysIso(first.date, -1);
+    const key = arrivalDayKey(first.date);
+    const ov = trip.overnightOverrides[key];
+    let to;
+    if (ov) {
+      to = { lat: ov.lat, lng: ov.lng, name: ov.address };
+    } else {
+      const route = await getCachedRoute(currentLoc.lat, currentLoc.lng, first.lat, first.lng, true);
+      if (myRun !== renderRunId) return;
+      if (route.durationMin <= DAILY_DRIVE_MIN) {
+        to = { lat: first.lat, lng: first.lng, name: `Nähe ${first.stadium}` };
+      } else {
+        const p = findPointAtTime(route.steps, DAILY_DRIVE_MIN * 60) || {
+          lat: currentLoc.lat + (first.lat - currentLoc.lat) * (DAILY_DRIVE_MIN / route.durationMin),
+          lng: currentLoc.lng + (first.lng - currentLoc.lng) * (DAILY_DRIVE_MIN / route.durationMin)
+        };
+        const name = (await cachedReverseGeocode(p.lat, p.lng)) || `Ungefähr ${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`;
+        to = { lat: p.lat, lng: p.lng, name };
+      }
+    }
+    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, label: "🧳 Anreisetag" };
+    drivenDates.add(date);
+  }
+  let arrivalRendered = false;
+
   for (let d = 0; d < plan.dayChains.length; d++) {
     const dc = plan.dayChains[d];
     allDropped.push(...dc.dropped);
+
+    if (arrivalDay && !arrivalRendered && dc.date >= arrivalDay.date) {
+      const arrivalHtml = await renderJourneyTiles([arrivalDay], myRun);
+      if (arrivalHtml === null) return;
+      html += arrivalHtml;
+      currentLoc = { ...arrivalDay.to };
+      arrivalRendered = true;
+    }
     if (dc.chain.length === 0 && drivenDates.has(dc.date)) continue;
 
     const dateLabel = formatDateLong(dc.date);
