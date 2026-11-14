@@ -95,11 +95,6 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 .checkbox-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; margin-top: 0.5rem; cursor: pointer; }
 .checkbox-row input { width: auto; padding: 0; }
 
-.match-list-item { transition: background-color 0.2s ease; border-left: 4px solid transparent; }
-.match-list-item.status-selected { background: #d4edda; border-left-color: #28a745; }
-.match-list-item.status-dropped { background: #f1f3f5; border-left-color: #adb5bd; color: #868e96; }
-.match-list-item.status-alternative { background: #eaf7ee; border-left-color: var(--accent); }
-.match-list-item.status-alternative .alt-reason { color: var(--primary-hover); font-size: 0.8rem; margin-top: 0.3rem; }
 .must-badge { color: #d4a017; }
 
 /* Plan-Switcher (Trip-Alternativen) */
@@ -190,14 +185,9 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 
 /* Ticketstatus */
 .match-actions { margin-top: 0.4rem; display: flex; gap: 0.4rem; flex-wrap: wrap; }
-.btn-ticket { background: #e9ecef; color: var(--text-color); }
-.btn-ticket:hover { background: #dee2e6; }
-.btn-no-tickets { color: #b02a37; }
 .ticket-badge { font-size: 0.75rem; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
 .ticket-badge-ok { background: #d1e7dd; color: #0f5132; }
 .ticket-badge-none { background: #f8d7da; color: #842029; }
-.match-list-item.status-no-tickets { background: #fbeff0; border-left-color: #dc3545; color: #6c757d; }
-.match-list-item.status-no-tickets strong { text-decoration: line-through; }
 .info-banner, .success-banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 0.75rem; font-size: 0.9rem; }
 .info-banner { background: #e7f1ff; border: 1px solid #9ec5fe; color: #084298; }
 .success-banner { background: #d1e7dd; border: 1px solid #a3cfbb; color: #0f5132; }
@@ -205,4 +195,74 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 .repair-notes summary { cursor: pointer; color: var(--primary); }
 .repair-notes ul { margin: 0.4rem 0 0 1.2rem; }
 .no-tickets-section h3 { color: #842029; }
-@media print { .no-print, .btn-ticket { display: none !important; } }
+@media print { .no-print, .ticket-toggle, .menu { display: none !important; } }
+
+/* ---------- Header ---------- */
+.btn-header { background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.35); padding: 0.5rem 0.8rem; }
+.btn-header:hover { background: rgba(255,255,255,0.22); }
+#tripSelect { background: #fff; border: none; font-weight: 600; }
+
+/* ---------- Dropdown-Menüs (⋯ / ☰) ---------- */
+.menu { position: relative; }
+.menu > summary { list-style: none; cursor: pointer; user-select: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-list {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 1500; min-width: 180px;
+  background: #fff; border: 1px solid var(--border-color); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15); padding: 0.3rem; display: flex; flex-direction: column;
+}
+.menu-list.menu-right, .match-menu .menu-list { left: auto; right: 0; }
+.menu-list button {
+  background: none; border: none; text-align: left; padding: 0.5rem 0.7rem; border-radius: 5px;
+  color: var(--text-color); font-size: 0.88rem; cursor: pointer; white-space: nowrap;
+}
+.menu-list button:hover { background: #f1f3f5; }
+.menu-list .menu-danger { color: #b02a37; }
+.menu-list hr { border: none; border-top: 1px solid var(--border-color); margin: 0.25rem 0; }
+.match-menu .menu-trigger {
+  width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px;
+  color: #6c757d; font-size: 1.1rem; line-height: 1;
+}
+.match-menu .menu-trigger:hover, .match-menu[open] .menu-trigger { background: rgba(0,0,0,0.07); color: var(--text-color); }
+
+/* ---------- Spielkarten (Seitenleiste) ---------- */
+.match-list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.match-list-item {
+  background: #fff; border: 1px solid var(--border-color); border-left: 4px solid #ced4da;
+  border-radius: 8px; padding: 0.6rem 0.7rem; font-size: 0.88rem; transition: background-color 0.2s ease;
+}
+.match-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+.match-card-title { font-size: 0.95rem; padding-top: 0.15rem; }
+.match-card-meta { color: #6c757d; font-size: 0.8rem; margin-top: 0.15rem; }
+.match-list-item .reason { font-size: 0.78rem; margin-top: 0.35rem; color: #6c757d; }
+.match-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+.club-website-link.compact { font-size: 0.78rem; }
+.match-list-item.status-selected { background: #f0f9f3; border-left-color: #28a745; }
+.match-list-item.status-selected .alt-reason { color: var(--primary); font-weight: 600; }
+.match-list-item.status-alternative { background: #f6fbf8; border-left-color: var(--accent); }
+.match-list-item.status-alternative .alt-reason { color: var(--primary-hover); }
+.match-list-item.status-dropped { background: #f8f9fa; border-left-color: #adb5bd; color: #868e96; }
+.match-list-item.status-no-tickets { background: #fdf3f4; border-left-color: #dc3545; color: #6c757d; }
+.match-list-item.status-no-tickets .match-card-title strong { text-decoration: line-through; }
+
+/* ---------- Ticket-Umschalter ---------- */
+.ticket-toggle { display: inline-flex; border: 1px solid var(--border-color); border-radius: 999px; overflow: hidden; background: #fff; }
+.ticket-toggle .tt-opt {
+  border: none; border-radius: 0; background: transparent; padding: 0.3rem 0.7rem;
+  font-size: 0.78rem; font-weight: 600; color: #6c757d; cursor: pointer;
+}
+.ticket-toggle .tt-opt + .tt-opt { border-left: 1px solid var(--border-color); }
+.ticket-toggle .tt-opt:hover { background: #f1f3f5; color: var(--text-color); }
+.ticket-toggle .tt-yes.active { background: #28a745; color: #fff; }
+.ticket-toggle .tt-no.active { background: #dc3545; color: #fff; }
+
+.print-only-inline { display: none; }
+@media print { .print-only-inline { display: inline !important; } }
+
+@media (max-width: 600px) {
+  .app-header { padding: 0.75rem 1rem; }
+  .app-header h1 { font-size: 1.2rem; }
+  .btn-label { display: none; }
+  #tripSelect { min-width: 0; flex: 1; }
+  .header-controls { width: 100%; }
+}

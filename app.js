@@ -1074,8 +1074,47 @@ function renderActiveTrip() {
 function websiteLinkHtml(m, className = "") {
   const url = safeHttpUrl(m.clubWebsite);
   if (!url) return "";
-  return `<a class="club-website-link ${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>`;
+  const label = className.includes("compact") ? "🔗 Tickets-Website" : "🔗 Vereinswebsite / Tickets";
+  return `<a class="club-website-link ${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
+
+// Ticket-Umschalter: initial nichts gewählt; ein Klick setzt "Tickets" bzw. "Keine",
+// ein erneuter Klick auf die aktive Option setzt wieder zurück.
+function ticketToggleHtml(m, extraClass = "") {
+  const yes = hasTickets(m), no = hasNoTickets(m);
+  return `<div class="ticket-toggle ${extraClass}" role="group" aria-label="Ticketstatus">
+      <button type="button" class="tt-opt tt-yes${yes ? ' active' : ''}" aria-pressed="${yes}" onclick="toggleTicket('${m.id}', 'purchased')" title="${yes ? 'Markierung entfernen' : 'Tickets gekauft – Spiel wird fest eingeplant'}">🎟️ Tickets</button>
+      <button type="button" class="tt-opt tt-no${no ? ' active' : ''}" aria-pressed="${no}" onclick="toggleTicket('${m.id}', 'no_tickets')" title="${no ? 'Markierung entfernen' : 'Keine Tickets bekommen – Spiel fliegt raus, Ersatz wird gesucht'}">🚫 Keine</button>
+    </div>`;
+}
+
+function toggleTicket(matchId, status) {
+  const trip = getActiveTrip();
+  const match = trip && trip.matches.find(m => m.id === matchId);
+  if (!match) return;
+  if (match.ticketStatus === status) setTicketStatus(matchId, null);
+  else if (status === "no_tickets") markNoTickets(matchId);
+  else setTicketStatus(matchId, status);
+}
+
+// Selten benötigte Aktionen eines Spiels im ⋯-Menü
+function matchMenuHtml(m) {
+  return `<details class="menu match-menu">
+      <summary class="menu-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">⋯</summary>
+      <div class="menu-list">
+        <button type="button" onclick="closeMenus(); editMatch('${m.id}')">✏️ Bearbeiten</button>
+        <button type="button" class="menu-danger" onclick="closeMenus(); deleteMatch('${m.id}')">🗑️ Löschen</button>
+      </div>
+    </details>`;
+}
+
+function closeMenus(except = null) {
+  document.querySelectorAll("details.menu[open]").forEach(d => { if (d !== except) d.open = false; });
+}
+
+// Offene Menüs bei Klick außerhalb bzw. Escape schließen
+document.addEventListener("click", e => closeMenus(e.target.closest("details.menu")));
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenus(); });
 
 function ticketBadgeHtml(m) {
   if (hasTickets(m)) return ' <span class="ticket-badge ticket-badge-ok" title="Tickets gekauft">🎟️ Tickets</span>';
@@ -1118,7 +1157,7 @@ function renderMatchList() {
     
       if (hasNoTickets(m)) {
         statusClass = "status-no-tickets";
-        reasonHtml = `<div class="reason">🚫 Keine Tickets bekommen – wird bei der Berechnung nicht berücksichtigt.</div>`;
+        reasonHtml = `<div class="reason">Wird bei der Berechnung nicht berücksichtigt.</div>`;
       } else if (totalPlans > 0) {
         const plansWithMatch = [];
         currentPlans.forEach((p, idx) => {
@@ -1130,7 +1169,7 @@ function renderMatchList() {
         if (plansWithMatch.length === totalPlans) {
           // In JEDER Alternative enthalten -> Dunkelgrün
           statusClass = "status-selected";
-          reasonHtml = `<div class="reason alt-reason" style="color:#1b4332; font-weight:600;">In allen Alternativen enthalten</div>`;
+          reasonHtml = `<div class="reason alt-reason">✓ In allen Alternativen enthalten</div>`;
         } else if (plansWithMatch.length > 0) {
           // Nur in EINZELNEN Alternativen enthalten -> Helles Grün
           statusClass = "status-alternative";
@@ -1140,30 +1179,26 @@ function renderMatchList() {
           // In KEINER Alternative enthalten -> Aussortiert
           statusClass = "status-dropped";
           const reason = droppedReasons.get(m.id) || "In keiner Alternative enthalten.";
-          reasonHtml = `<div class="reason" style="text-decoration:none;">${escapeHtml(reason)}</div>`;
+          reasonHtml = `<div class="reason">${escapeHtml(reason)}</div>`;
         }
       }
 
-      const ticketButtons = hasNoTickets(m)
-        ? `<button onclick="restoreTickets('${m.id}')" class="btn btn-small btn-ticket" title="Spiel als „Tickets gekauft“ markieren">↩️ Doch Tickets bekommen</button>`
-        : hasTickets(m)
-          ? `<button onclick="setTicketStatus('${m.id}', null)" class="btn btn-small btn-ticket" title="Markierung „Tickets gekauft“ entfernen">🎟️ Gekauft ✓ – zurücksetzen</button>`
-          : `<button onclick="setTicketStatus('${m.id}', 'purchased')" class="btn btn-small btn-ticket" title="Spiel wird bei jeder Berechnung fest eingeplant">🎟️ Tickets gekauft</button>
-             <button onclick="markNoTickets('${m.id}')" class="btn btn-small btn-ticket btn-no-tickets" title="Spiel aus dem Plan nehmen und Ersatz suchen">🚫 Keine Tickets</button>`;
-
+      const leagueLabel = escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel));
       return `
-    <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
-      <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(m)}<br>
-      ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-      📅 ${m.date} - ⏰ ${m.time} Uhr<br>
-      📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}
-      ${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}
-      ${reasonHtml}
-      <div class="match-actions">
-        <button onclick="editMatch('${m.id}')" class="btn btn-small">Bearbeiten</button>
-        <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red;">Löschen</button>
+    <li class="match-list-item ${statusClass}">
+      <div class="match-card-head">
+        <div class="match-card-title">
+          <strong>${escapeHtml(m.home)} – ${escapeHtml(m.away)}</strong>${m.mustAttend ? ' <span class="must-badge" title="Highlightspiel">⭐</span>' : ''}
+        </div>
+        ${matchMenuHtml(m)}
       </div>
-      <div class="match-actions">${ticketButtons}</div>
+      <div class="match-card-meta">📅 ${formatDateShort(m.date)} · ${m.time} Uhr · ${leagueLabel}</div>
+      <div class="match-card-meta">📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}</div>
+      ${reasonHtml}
+      <div class="match-card-foot">
+        ${ticketToggleHtml(m)}
+        ${m.clubWebsite ? websiteLinkHtml(m, "compact") : ""}
+      </div>
     </li>
   `;
     }).join('');
@@ -2245,14 +2280,6 @@ function refreshPlanTicketCounts(trip) {
   });
 }
 
-function restoreTickets(matchId) {
-  const trip = getActiveTrip();
-  const match = trip && trip.matches.find(m => m.id === matchId);
-  if (!match) return;
-  // Wer doch Tickets bekommen hat, hat sie gekauft – also direkt so markieren.
-  setTicketStatus(matchId, "purchased");
-}
-
 function setTicketStatus(matchId, status) {
   const trip = getActiveTrip();
   const match = trip && trip.matches.find(m => m.id === matchId);
@@ -2515,10 +2542,10 @@ async function renderDayTiles(plan, trip) {
           <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
         </div>
         <div class="timeline-item match-item">
-          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(match)} (${matchContextLabel(match)})<br>
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<span class="print-only-inline">${ticketBadgeHtml(match)}</span> (${matchContextLabel(match)})<br>
           ${scoreHtml(match)}<br>
           ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
-          ${hasTickets(match) ? '' : `<div class="match-actions no-print"><button class="btn btn-small btn-ticket btn-no-tickets" onclick="markNoTickets('${match.id}')" title="Spiel aus dem Plan nehmen und Ersatz suchen">🚫 Keine Tickets bekommen</button></div>`}
+          <div class="match-actions no-print">${ticketToggleHtml(match)}</div>
         </div>
       `;
 
@@ -2647,7 +2674,7 @@ async function renderDayTiles(plan, trip) {
     droppedHtml += `
       <div class="dropped-section no-tickets-section">
         <h3>🚫 Keine Tickets bekommen (${noTickets.length})</h3>
-        ${noTickets.map(m => droppedLine(m, `<button class="btn btn-small btn-ticket no-print" onclick="restoreTickets('${m.id}')">↩️ Doch Tickets bekommen</button>`)).join('')}
+        ${noTickets.map(m => droppedLine(m, `<div class="no-print">${ticketToggleHtml(m)}</div>`)).join('')}
       </div>`;
   }
   droppedEl.innerHTML = droppedHtml;
