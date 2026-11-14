@@ -150,7 +150,6 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 .route-calculation-controls label { margin-right: 0.5rem; }
 .route-calculation-controls select { flex: 1; min-width: 140px; }
 
-.match-ics-button { margin-left: 0.25rem; }
 
 /* Print styles */
 @media print {
@@ -160,7 +159,7 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
   .app-header h1 { font-size: 18pt; }
   .header-controls, .sidebar, .map-controls, #map, .route-calculation-controls,
   .plan-switcher-wrap, .match-list-item button, .overnight-block input,
-  .overnight-block button, .deeplink-btn, .print-trip-button, .match-ics-button { display: none !important; }
+  .overnight-block button, .deeplink-btn, .print-trip-button { display: none !important; }
   .main-layout { display: block; padding: 0; min-height: 0; }
   .content-area { display: block; overflow: visible; }
   .timeline-card { border: 0; box-shadow: none; padding: 0; }
