@@ -188,3 +188,23 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
 
 .print-only { display: none; }
 @media print { .print-only { display: block !important; } }
+
+/* Ticketstatus */
+.match-actions { margin-top: 0.4rem; display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.btn-ticket { background: #e9ecef; color: var(--text-color); }
+.btn-ticket:hover { background: #dee2e6; }
+.btn-no-tickets { color: #b02a37; }
+.ticket-badge { font-size: 0.75rem; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
+.ticket-badge-ok { background: #d1e7dd; color: #0f5132; }
+.ticket-badge-none { background: #f8d7da; color: #842029; }
+.match-list-item.status-no-tickets { background: #fbeff0; border-left-color: #dc3545; color: #6c757d; }
+.match-list-item.status-no-tickets strong { text-decoration: line-through; }
+.ticket-warning { margin-top: 0.4rem; font-size: 0.8rem; }
+.info-banner, .success-banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 0.75rem; font-size: 0.9rem; }
+.info-banner { background: #e7f1ff; border: 1px solid #9ec5fe; color: #084298; }
+.success-banner { background: #d1e7dd; border: 1px solid #a3cfbb; color: #0f5132; }
+.repair-notes { margin-top: 0.5rem; font-size: 0.85rem; }
+.repair-notes summary { cursor: pointer; color: var(--primary); }
+.repair-notes ul { margin: 0.4rem 0 0 1.2rem; }
+.no-tickets-section h3 { color: #842029; }
+@media print { .no-print, .btn-ticket { display: none !important; } }

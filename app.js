@@ -110,6 +110,15 @@ function loadLocalStorage() {
       throw new Error("Unerwartetes Datenformat");
     }
     state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
+    // Gespeicherte Pläne referenzieren Spiele nur per ID: wieder mit den Spielobjekten des Trips verknüpfen.
+    state.trips.forEach(trip => {
+      if (!Array.isArray(trip.plans)) return;
+      const byId = new Map(trip.matches.map(m => [String(m.id), m]));
+      const eligible = planningMatches(trip);
+      const mustTotal = eligible.filter(m => m.mustAttend).length;
+      trip.plans = trip.plans.map(p => rebindImportedPlan(p, byId, eligible.length, mustTotal)).filter(Boolean);
+      if (!trip.plans.length) delete trip.plans;
+    });
   } catch (err) {
     console.error("Gespeicherte Daten unlesbar:", err);
     try { localStorage.setItem("groundhopping_data_backup_" + Date.now(), raw); } catch (e) { /* Speicher voll */ }
@@ -117,8 +126,40 @@ function loadLocalStorage() {
   }
 }
 
+// Pläne werden kompakt gespeichert: Spiele nur als ID, abgeleitete Felder (selected/dropped) entfallen.
+// Beim Laden/Import baut rebindImportedPlan die Objektverweise und Kennzahlen wieder auf.
+function serializePlan(plan) {
+  return {
+    dayChains: plan.dayChains.map(dc => ({
+      date: dc.date,
+      chain: dc.chain.map(m => m.id),
+      dropped: dc.dropped.map(d => ({ match: d.match.id, reason: d.reason })),
+      overnightAfter: dc.overnightAfter
+    })),
+    totalTravelMin: plan.totalTravelMin,
+    tightNights: plan.tightNights,
+    infeasibleNights: plan.infeasibleNights,
+    scoreSum: plan.scoreSum,
+    optimizationMode: plan.optimizationMode,
+    signature: plan.signature,
+    description: plan.description,
+    changedDates: Array.from(plan.changedDates || []),
+    repairNotes: plan.repairNotes || []
+  };
+}
+
+function serializeTrip(trip) {
+  return Array.isArray(trip.plans) ? { ...trip, plans: trip.plans.map(serializePlan) } : trip;
+}
+
 function saveLocalStorage() {
-  localStorage.setItem("groundhopping_data", JSON.stringify(state));
+  const data = { ...state, trips: state.trips.map(serializeTrip) };
+  try {
+    localStorage.setItem("groundhopping_data", JSON.stringify(data));
+  } catch (err) {
+    console.error("Speichern fehlgeschlagen:", err);
+    alert("Die Daten konnten nicht im Browser gespeichert werden (Speicher voll?). Bitte den Trip zur Sicherheit exportieren.");
+  }
 }
 
 function getActiveTrip() {
@@ -277,7 +318,7 @@ async function fetchSoccerTeam(teamName) {
   for (const candidate of candidates) {
     try {
       const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(candidate)}`;
-      const res = await fetch(url);
+      const res = await fetchWithTimeout(url);
       const data = await res.json();
       if (!data || !Array.isArray(data.teams)) continue;
 
@@ -303,7 +344,7 @@ async function lookupVenueById(idVenue) {
   if (!idVenue) return null;
   try {
     const url = `https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php?id=${encodeURIComponent(idVenue)}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
     const venue = data && Array.isArray(data.venues) ? data.venues[0] : null;
     return venue ? {
@@ -322,7 +363,7 @@ async function searchVenueByName(venueName) {
   if (!venueName || !venueName.trim()) return null;
   try {
     const url = `https://www.thesportsdb.com/api/v1/json/123/searchvenues.php?v=${encodeURIComponent(venueName.trim())}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
     if (!data || !Array.isArray(data.venues) || !data.venues.length) return null;
     const normalizeVenueName = value => String(value || "")
@@ -516,30 +557,121 @@ function updateCompetitionFields() {
   if (leagueLevel) leagueLevel.required = type === "league";
   if (cupStage) cupStage.required = isCupCompetition(type);
 }
-function competitionLabel(type) { return ({league:"Liga",national_cup:"Pokal national",international_cup:"Pokal international",friendly:"Freundschaftsspiel",other:"Sonstiges"})[type || "league"] || "Liga"; }
-function cupStageLabel(stage) { return ({final:"Finale",semifinal:"Halbfinale",knockout:"KO-Runde",group:"Gruppenphase",qualification:"Qualifikationsphase"})[stage] || ""; }
+function competitionLabel(type) {
+  const labels = {
+    league: "Liga", national_cup: "Pokal national", international_cup: "Pokal international",
+    friendly: "Freundschaftsspiel", other: "Sonstiges"
+  };
+  return labels[type || "league"] || "Liga";
+}
+
+function cupStageLabel(stage) {
+  const labels = {
+    final: "Finale", semifinal: "Halbfinale", knockout: "KO-Runde",
+    group: "Gruppenphase", qualification: "Qualifikationsphase"
+  };
+  return labels[stage] || "";
+}
+
+const DEFAULT_WEIGHTS = { highlight: 40, stage: 30, competition: 20, stadium: 10 };
+
 function normalizedWeights() {
-  const raw = state.settings.groundhopperWeights || {highlight:40,stage:30,competition:20,stadium:10};
-  const values = {highlight:Math.max(0,+raw.highlight||0),stage:Math.max(0,+raw.stage||0),competition:Math.max(0,+raw.competition||0),stadium:Math.max(0,+raw.stadium||0)};
-  const sum = Object.values(values).reduce((a,b)=>a+b,0);
-  if (!sum) return {highlight:.4,stage:.3,competition:.2,stadium:.1};
-  return Object.fromEntries(Object.entries(values).map(([key,value])=>[key,value/sum]));
+  const raw = state.settings.groundhopperWeights || DEFAULT_WEIGHTS;
+  const values = {};
+  for (const key of Object.keys(DEFAULT_WEIGHTS)) values[key] = Math.max(0, +raw[key] || 0);
+  const sum = Object.values(values).reduce((a, b) => a + b, 0);
+  const base = sum ? values : DEFAULT_WEIGHTS;
+  const total = sum || 100;
+  return Object.fromEntries(Object.entries(base).map(([key, value]) => [key, value / total]));
 }
+
+const LEAGUE_STAGE_SCORE = { 1: 100, 2: 83, 3: 67, 4: 50, 5: 33, 6: 17 };
+const CUP_STAGE_SCORE = { final: 100, semifinal: 80, knockout: 60, group: 40, qualification: 20 };
+const COMPETITION_SCORE = { international_cup: 100, national_cup: 75, league: 50, other: 25, friendly: 10 };
+
+function stadiumScore(capacity) {
+  if (capacity >= 60000) return 100;
+  if (capacity >= 40000) return 80;
+  if (capacity >= 20000) return 60;
+  if (capacity >= 10000) return 40;
+  if (capacity >= 5000) return 20;
+  return capacity > 0 ? 10 : 0;
+}
+
 function matchScoreDetails(match) {
-  const type=match.competitionType||"league", weights=normalizedWeights(), highlight=match.mustAttend?100:0;
-  const stage=type==="league"?({1:100,2:83,3:67,4:50,5:33,6:17}[match.leagueLevel]||0):isCupCompetition(type)?({final:100,semifinal:80,knockout:60,group:40,qualification:20}[match.cupStage]||0):0;
-  const competition=({international_cup:100,national_cup:75,league:50,other:25,friendly:10})[type]||0;
-  const capacity=Number(match.stadiumCapacity)||0;
-  const stadium=capacity>=60000?100:capacity>=40000?80:capacity>=20000?60:capacity>=10000?40:capacity>=5000?20:capacity>0?10:0;
-  const score=Math.round(highlight*weights.highlight+stage*weights.stage+competition*weights.competition+stadium*weights.stadium);
-  return {score,highlight,stage,competition,stadium};
+  const type = match.competitionType || "league";
+  const weights = normalizedWeights();
+  const highlight = match.mustAttend ? 100 : 0;
+  const stage = type === "league"
+    ? (LEAGUE_STAGE_SCORE[match.leagueLevel] || 0)
+    : isCupCompetition(type) ? (CUP_STAGE_SCORE[match.cupStage] || 0) : 0;
+  const competition = COMPETITION_SCORE[type] || 0;
+  const stadium = stadiumScore(Number(match.stadiumCapacity) || 0);
+  const score = Math.round(
+    highlight * weights.highlight + stage * weights.stage +
+    competition * weights.competition + stadium * weights.stadium
+  );
+  return { score, highlight, stage, competition, stadium };
 }
+
 function groundhopperScore(match) { return matchScoreDetails(match).score; }
-function scoreHtml(match) { const d=matchScoreDetails(match); return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Liga-Level/Pokalphase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">🏆 Groundhopper Score: <strong>${d.score}/100</strong></span>`; }
-function matchContextLabel(match) { const type=match.competitionType||"league"; if(type==="league") return `${escapeHtml(match.leagueName||getLeagueName(match.countryCode,match.leagueLevel))} · Liga`; if(isCupCompetition(type)) return `${competitionLabel(type)}${match.cupStage?` · ${cupStageLabel(match.cupStage)}`:""}`; return competitionLabel(type); }
-function optimizationModeLabel(mode=currentOptimizationMode) { return ({most_games:"Meiste Spiele",groundhopper_score:"Groundhopper Score",balanced:"Ausgewogen"})[mode] || "Meiste Spiele"; }
-function chainMetrics(chain, referenceCount=1) { const count=chain.length, scoreSum=chain.reduce((sum,m)=>sum+groundhopperScore(m),0), averageScore=count?scoreSum/count:0, countScore=count/Math.max(1,referenceCount)*100; return {count,scoreSum,averageScore,balancedScore:.6*countScore+.4*averageScore}; }
-function compareOptimizationMetrics(a,b,referenceCount) { const A=chainMetrics(a,referenceCount), B=chainMetrics(b,referenceCount); if(currentOptimizationMode==="groundhopper_score"){if(A.averageScore!==B.averageScore)return B.averageScore-A.averageScore;if(A.count!==B.count)return B.count-A.count;}else if(currentOptimizationMode==="balanced"){if(A.balancedScore!==B.balancedScore)return B.balancedScore-A.balancedScore;if(A.count!==B.count)return B.count-A.count;}else{if(A.count!==B.count)return B.count-A.count;if(A.scoreSum!==B.scoreSum)return B.scoreSum-A.scoreSum;}return 0; }
+
+function scoreHtml(match) {
+  const d = matchScoreDetails(match);
+  return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Liga-Level/Pokalphase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">🏆 Groundhopper Score: <strong>${d.score}/100</strong></span>`;
+}
+
+function matchContextLabel(match) {
+  const type = match.competitionType || "league";
+  if (type === "league") return `${escapeHtml(match.leagueName || getLeagueName(match.countryCode, match.leagueLevel))} · Liga`;
+  if (isCupCompetition(type)) return `${competitionLabel(type)}${match.cupStage ? ` · ${cupStageLabel(match.cupStage)}` : ""}`;
+  return competitionLabel(type);
+}
+
+function optimizationModeLabel(mode = currentOptimizationMode) {
+  return ({ most_games: "Meiste Spiele", groundhopper_score: "Groundhopper Score", balanced: "Ausgewogen" })[mode] || "Meiste Spiele";
+}
+
+// Einheitlicher Vergleich zweier Kandidaten nach der aktiven Berechnungsmethode.
+// count = Anzahl Spiele, scoreSum = Summe der Groundhopper Scores, ref = Referenzanzahl für "Ausgewogen".
+// Rückgabe < 0: a ist besser, > 0: b ist besser, 0: gleichwertig.
+function compareByMode(a, b, ref) {
+  const avgA = a.count ? a.scoreSum / a.count : 0;
+  const avgB = b.count ? b.scoreSum / b.count : 0;
+  if (currentOptimizationMode === "groundhopper_score") {
+    if (avgA !== avgB) return avgB - avgA;
+    return b.count - a.count;
+  }
+  if (currentOptimizationMode === "balanced") {
+    const r = Math.max(1, ref || 1);
+    const balA = 0.6 * (a.count / r) * 100 + 0.4 * avgA;
+    const balB = 0.6 * (b.count / r) * 100 + 0.4 * avgB;
+    if (balA !== balB) return balB - balA;
+    return b.count - a.count;
+  }
+  if (a.count !== b.count) return b.count - a.count;
+  return b.scoreSum - a.scoreSum;
+}
+
+function chainScoreSum(chain) { return chain.reduce((sum, m) => sum + groundhopperScore(m), 0); }
+
+function compareOptimizationMetrics(a, b, referenceCount) {
+  return compareByMode(
+    { count: a.length, scoreSum: chainScoreSum(a) },
+    { count: b.length, scoreSum: chainScoreSum(b) },
+    referenceCount
+  );
+}
+
+// ---------- Ticketstatus ----------
+// ticketStatus: null (offen) | "purchased" (Tickets gekauft) | "no_tickets" (keine Tickets bekommen)
+const TICKET_STATUSES = ["purchased", "no_tickets"];
+const hasNoTickets = m => m.ticketStatus === "no_tickets";
+const hasTickets = m => m.ticketStatus === "purchased";
+// Spiele, die zwingend eingeplant werden sollen: gekaufte Tickets oder Highlightspiele.
+const isForced = m => hasTickets(m) || !!m.mustAttend;
+// Spiele, die überhaupt in die Berechnung eingehen.
+function planningMatches(trip) { return trip.matches.filter(m => !hasNoTickets(m)); }
 
 // ---------- Match Handling ----------
 async function addMatch(e) {
@@ -600,6 +732,8 @@ async function addMatch(e) {
     lat: coords.lat,
     lng: coords.lng,
     mustAttend: document.getElementById("mustAttend").checked,
+    // Ticketstatus beim Bearbeiten erhalten
+    ticketStatus: (editingMatchId && trip.matches.find(m => m.id === editingMatchId)?.ticketStatus) || null,
     customArrivalBuffer: document.getElementById("customArrivalBuffer").value ? parseInt(document.getElementById("customArrivalBuffer").value) : null,
     customDepartureBuffer: document.getElementById("customDepartureBuffer").value ? parseInt(document.getElementById("customDepartureBuffer").value) : null
   };
@@ -708,7 +842,7 @@ function deleteMatch(matchId) {
   const trip = getActiveTrip();
   trip.matches = trip.matches.filter(m => m.id !== matchId);
   delete trip.overnightOverrides[matchId];
-    Object.keys(trip.overnightOverrides).forEach(k => {
+  Object.keys(trip.overnightOverrides).forEach(k => {
     if (k.startsWith(`${matchId}@`)) delete trip.overnightOverrides[k];
   });
   
@@ -813,6 +947,7 @@ function sanitizeImportedMatch(raw, usedIds, index) {
     date: raw.date, time: raw.time,
     stadium: toText(raw.stadium, 200), resolvedAddress: toText(raw.resolvedAddress, 300),
     lat, lng, mustAttend: !!raw.mustAttend,
+    ticketStatus: TICKET_STATUSES.includes(raw.ticketStatus) ? raw.ticketStatus : null,
     customArrivalBuffer: buffer(raw.customArrivalBuffer), customDepartureBuffer: buffer(raw.customDepartureBuffer)
   };
 }
@@ -835,16 +970,18 @@ function rebindImportedPlan(raw, byOldId, availableCount, mustTotal) {
     });
   }
   const selected = dayChains.flatMap(dc => dc.chain), dropped = dayChains.flatMap(dc => dc.dropped);
-  const scoreSum = toNum(raw.scoreSum, selected.reduce((s, m) => s + groundhopperScore(m), 0));
+  const scoreSum = toNum(raw.scoreSum, chainScoreSum(selected));
   return {
     dayChains, selected, dropped,
     totalTravelMin: toNum(raw.totalTravelMin, 0), tightNights: toNum(raw.tightNights, 0), infeasibleNights: toNum(raw.infeasibleNights, 0),
     matchCount: selected.length, mustAttendCount: selected.filter(m => m.mustAttend).length, mustAttendTotal: mustTotal,
+    purchasedCount: selected.filter(hasTickets).length,
     scoreSum, averageGroundhopperScore: selected.length ? scoreSum / selected.length : 0,
     availableMatchCount: availableCount,
     optimizationMode: OPT_MODES.includes(raw.optimizationMode) ? raw.optimizationMode : "most_games",
     signature: toText(raw.signature, 2000), description: toText(raw.description, 500),
-    changedDates: Array.isArray(raw.changedDates) ? raw.changedDates.filter(d => isValidDate(d)) : []
+    changedDates: Array.isArray(raw.changedDates) ? raw.changedDates.filter(d => isValidDate(d)) : [],
+    repairNotes: Array.isArray(raw.repairNotes) ? raw.repairNotes.slice(0, 20).map(n => toText(n, 300)) : []
   };
 }
 
@@ -876,9 +1013,10 @@ function normalizeImportedTrip(rawTrip, fallbackPlans) {
     }
   });
 
-  const mustTotal = matches.filter(m => m.mustAttend).length;
+  const eligible = matches.filter(m => !hasNoTickets(m));
+  const mustTotal = eligible.filter(m => m.mustAttend).length;
   const rawPlans = Array.isArray(rawTrip.plans) ? rawTrip.plans : (Array.isArray(fallbackPlans) ? fallbackPlans : []);
-  const plans = rawPlans.map(p => rebindImportedPlan(p, byOldId, matches.length, mustTotal)).filter(Boolean);
+  const plans = rawPlans.map(p => rebindImportedPlan(p, byOldId, eligible.length, mustTotal)).filter(Boolean);
 
   const trip = {
     id: "trip_" + Date.now(), name, startAddress, matches, overnightOverrides,
@@ -933,6 +1071,12 @@ function websiteLinkHtml(m, className = "") {
   return `<a class="club-website-link ${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">🎟️ Vereinswebsite / Tickets</a>`;
 }
 
+function ticketBadgeHtml(m) {
+  if (hasTickets(m)) return ' <span class="ticket-badge ticket-badge-ok" title="Tickets gekauft">🎟️ Tickets</span>';
+  if (hasNoTickets(m)) return ' <span class="ticket-badge ticket-badge-none" title="Keine Tickets bekommen">🚫 Keine Tickets</span>';
+  return "";
+}
+
 function capacityHtml(m) {
   return m.stadiumCapacity ? ` · ${Number(m.stadiumCapacity).toLocaleString("de-DE")} Plätze` : "";
 }
@@ -940,7 +1084,7 @@ function capacityHtml(m) {
 function matchPopupHtml(m) {
   const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
-  return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}<br>
+  return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(m)}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
     🏟️ <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
     📅 ${m.date} um ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}`;
@@ -965,8 +1109,12 @@ function renderMatchList() {
     .map(m => {
       let statusClass = "";
       let reasonHtml = "";
+      const inActivePlan = !!activePlan && activePlan.selected.some(sm => sm.id === m.id);
 
-      if (totalPlans > 0) {
+      if (hasNoTickets(m)) {
+        statusClass = "status-no-tickets";
+        reasonHtml = `<div class="reason">🚫 Keine Tickets bekommen – wird bei der Berechnung nicht berücksichtigt.</div>`;
+      } else if (totalPlans > 0) {
         const plansWithMatch = [];
         currentPlans.forEach((p, idx) => {
           if (p.selected.some(sm => sm.id === m.id)) {
@@ -991,18 +1139,30 @@ function renderMatchList() {
         }
       }
 
+      if (hasTickets(m) && activePlan && !inActivePlan) {
+        reasonHtml += `<div class="warning-banner ticket-warning">⚠️ Tickets gekauft, aber nicht im aktiven Plan – bitte „Route berechnen“ erneut ausführen.</div>`;
+      }
+
+      const ticketButtons = hasNoTickets(m)
+        ? `<button onclick="restoreTickets('${m.id}')" class="btn btn-small btn-ticket" title="Spiel wieder für die Berechnung freigeben">↩️ Doch Tickets bekommen</button>`
+        : hasTickets(m)
+          ? `<button onclick="setTicketStatus('${m.id}', null)" class="btn btn-small btn-ticket" title="Markierung „Tickets gekauft“ entfernen">🎟️ Gekauft ✓ – zurücksetzen</button>`
+          : `<button onclick="setTicketStatus('${m.id}', 'purchased')" class="btn btn-small btn-ticket" title="Spiel wird bei jeder Berechnung fest eingeplant">🎟️ Tickets gekauft</button>
+             <button onclick="markNoTickets('${m.id}')" class="btn btn-small btn-ticket btn-no-tickets" title="Spiel aus dem Plan nehmen und Ersatz suchen">🚫 Keine Tickets</button>`;
+
       return `
     <li class="card match-list-item ${statusClass}" style="margin-bottom:0.5rem; padding:0.75rem;">
-      <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<br>
+      <strong>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</strong> ${m.mustAttend ? '<span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(m)}<br>
       ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
       📅 ${m.date} - ⏰ ${m.time} Uhr<br>
       📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}
       ${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}
       ${reasonHtml}
-      <div style="margin-top:0.4rem; display:flex; gap:0.4rem;">
+      <div class="match-actions">
         <button onclick="editMatch('${m.id}')" class="btn btn-small">Bearbeiten</button>
         <button onclick="deleteMatch('${m.id}')" class="btn btn-small" style="color:red;">Löschen</button>
       </div>
+      <div class="match-actions">${ticketButtons}</div>
     </li>
   `;
     }).join('');
@@ -1264,11 +1424,15 @@ function timeToDateOnDay(dateStr, timeStr) {
 }
 
 function priorityScore(m) { return groundhopperScore(m); }
-function compareDpStates(candidate,current,ref){
- if(!current)return true;const ca=candidate.count?candidate.score/candidate.count:0,cu=current.count?current.score/current.count:0;
- if(currentOptimizationMode==="groundhopper_score"){if(ca!==cu)return ca>cu;if(candidate.count!==current.count)return candidate.count>current.count;}
- else if(currentOptimizationMode==="balanced"){const cb=.6*(candidate.count/Math.max(1,ref))*100+.4*ca,ub=.6*(current.count/Math.max(1,ref))*100+.4*cu;if(cb!==ub)return cb>ub;if(candidate.count!==current.count)return candidate.count>current.count;}
- else{if(candidate.count!==current.count)return candidate.count>current.count;if(candidate.score!==current.score)return candidate.score>current.score;}return false;
+
+// true, wenn der DP-Zustand `candidate` besser ist als `current` (fehlender current zählt als schlechter).
+function compareDpStates(candidate, current, ref) {
+  if (!current) return true;
+  return compareByMode(
+    { count: candidate.count, scoreSum: candidate.score },
+    { count: current.count, scoreSum: current.score },
+    ref
+  ) < 0;
 }
 
 // ---------- Dynamic Programming ----------
@@ -1352,7 +1516,8 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
   for (const mustIdx of mustIndices) {
     if (mustIdx < cursor) continue;
     const forcedMatch = dayMatches[mustIdx];
-    const isRealMustAttend = !!forcedMatch.mustAttend;
+    const isRealMustAttend = isForced(forcedMatch);
+    const forcedLabel = hasTickets(forcedMatch) ? "Spiel mit gekauften Tickets" : "Highlightspiel";
     const segment = dayMatches.slice(cursor, mustIdx + 1);
     const { chain: segChain, usedIndices, reachable } = await bestChainEndingAtLast(segment, currentLoc, currentTime);
 
@@ -1360,7 +1525,7 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
       dropped.push({
         match: forcedMatch,
         reason: isRealMustAttend
-          ? "Highlightspiel zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen."
+          ? `${forcedLabel} zeitlich nicht erreichbar – bitte Reisezeit/Puffer oder andere Spiele prüfen.`
           : "In dieser Alternative zeitlich nicht erreichbar."
       });
       const fallbackSegment = dayMatches.slice(cursor, mustIdx);
@@ -1381,7 +1546,7 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
           dropped.push({
             match: m,
             reason: isRealMustAttend
-              ? "Zeitlich nicht mit der Tagesauswahl vereinbar (Highlightspiel hat Vorrang)."
+              ? `Zeitlich nicht mit der Tagesauswahl vereinbar (${forcedLabel} hat Vorrang).`
               : "Zeitlich nicht mit dieser Alternative vereinbar."
           });
         }
@@ -1540,14 +1705,14 @@ function dayChainSignature(chain) {
 
 async function generateDayCandidates(dayMatches, startLoc, startTime, maxAlternatives = MAX_DAY_ALTERNATIVES) {
   const trueMustIndices = [];
-  dayMatches.forEach((m, i) => { if (m.mustAttend) trueMustIndices.push(i); });
+  dayMatches.forEach((m, i) => { if (isForced(m)) trueMustIndices.push(i); });
 
   const base = await chainWithForcedIndices(dayMatches, trueMustIndices, startLoc, startTime);
   const seen = new Map();
   seen.set(dayChainSignature(base.chain), base);
 
   for (const d of base.dropped) {
-    if (d.match.mustAttend) continue;
+    if (isForced(d.match)) continue;
     const idx = dayMatches.indexOf(d.match);
     if (idx === -1) continue;
     const alt = await chainWithForcedIndices(dayMatches, [...trueMustIndices, idx], startLoc, startTime);
@@ -1556,10 +1721,10 @@ async function generateDayCandidates(dayMatches, startLoc, startTime, maxAlterna
   }
 
   for (const m of base.chain) {
-    if (m.mustAttend) continue;
+    if (isForced(m)) continue;
     const filtered = dayMatches.filter(x => x.id !== m.id);
     const remappedMust = [];
-    filtered.forEach((x, i) => { if (x.mustAttend) remappedMust.push(i); });
+    filtered.forEach((x, i) => { if (isForced(x)) remappedMust.push(i); });
     const alt = await chainWithForcedIndices(filtered, remappedMust, startLoc, startTime);
     const sig = dayChainSignature(alt.chain);
     if (!seen.has(sig)) seen.set(sig, alt);
@@ -1568,6 +1733,9 @@ async function generateDayCandidates(dayMatches, startLoc, startTime, maxAlterna
   const candidates = [...seen.values()];
 
   candidates.sort((a, b) => {
+    const ticketDroppedA = a.dropped.filter(x => hasTickets(x.match)).length;
+    const ticketDroppedB = b.dropped.filter(x => hasTickets(x.match)).length;
+    if (ticketDroppedA !== ticketDroppedB) return ticketDroppedA - ticketDroppedB;
     const mustDroppedA = a.dropped.filter(x => x.match.mustAttend).length;
     const mustDroppedB = b.dropped.filter(x => x.match.mustAttend).length;
     if (mustDroppedA !== mustDroppedB) return mustDroppedA - mustDroppedB;
@@ -1587,25 +1755,31 @@ async function computeDayTravelMin(chain, startLoc) {
   return total;
 }
 
-function comparePlans(a,b,referenceCount=null){
- if(a.infeasibleNights!==b.infeasibleNights)return a.infeasibleNights-b.infeasibleNights;
- if(a.mustAttendCount!==b.mustAttendCount)return b.mustAttendCount-a.mustAttendCount;
- const ref=Math.max(1,referenceCount||a.availableMatchCount||b.availableMatchCount||a.matchCount||b.matchCount),avgA=a.matchCount?(a.scoreSum||0)/a.matchCount:0,avgB=b.matchCount?(b.scoreSum||0)/b.matchCount:0;
- if(currentOptimizationMode==="groundhopper_score"){if(avgA!==avgB)return avgB-avgA;if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;}
- else if(currentOptimizationMode==="balanced"){const A=.6*(a.matchCount/ref)*100+.4*avgA,B=.6*(b.matchCount/ref)*100+.4*avgB;if(A!==B)return B-A;if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;}
- else{if(a.matchCount!==b.matchCount)return b.matchCount-a.matchCount;if((a.scoreSum||0)!==(b.scoreSum||0))return (b.scoreSum||0)-(a.scoreSum||0);}
- if(a.tightNights!==b.tightNights)return a.tightNights-b.tightNights;return a.totalTravelMin-b.totalTravelMin;
+function comparePlans(a, b, referenceCount = null) {
+  if (a.infeasibleNights !== b.infeasibleNights) return a.infeasibleNights - b.infeasibleNights;
+  const ticketsA = a.purchasedCount || 0, ticketsB = b.purchasedCount || 0;
+  if (ticketsA !== ticketsB) return ticketsB - ticketsA;
+  if (a.mustAttendCount !== b.mustAttendCount) return b.mustAttendCount - a.mustAttendCount;
+  const ref = Math.max(1, referenceCount || a.availableMatchCount || b.availableMatchCount || a.matchCount || b.matchCount);
+  const byMode = compareByMode(
+    { count: a.matchCount, scoreSum: a.scoreSum || 0 },
+    { count: b.matchCount, scoreSum: b.scoreSum || 0 },
+    ref
+  );
+  if (byMode !== 0) return byMode;
+  if (a.tightNights !== b.tightNights) return a.tightNights - b.tightNights;
+  return a.totalTravelMin - b.totalTravelMin;
+}
+
+function planSignature(dayChains) {
+  return dayChains.map(dc => dayChainSignature(dc.chain)).join('|');
 }
 
 function finalizePlanState(beamState, trip) {
-  const selected = [];
-  const dropped = [];
-  beamState.dayChains.forEach(dc => {
-    selected.push(...dc.chain);
-    dropped.push(...dc.dropped);
-  });
-  const mustAttendTotal = trip.matches.filter(m => m.mustAttend).length;
-  const signature = beamState.dayChains.map(dc => dayChainSignature(dc.chain)).join('|');
+  const selected = beamState.dayChains.flatMap(dc => dc.chain);
+  const dropped = beamState.dayChains.flatMap(dc => dc.dropped);
+  const eligible = planningMatches(trip);
+  const scoreSum = chainScoreSum(selected);
 
   return {
     dayChains: beamState.dayChains,
@@ -1614,14 +1788,15 @@ function finalizePlanState(beamState, trip) {
     totalTravelMin: beamState.totalTravelMin,
     tightNights: beamState.tightNights,
     infeasibleNights: beamState.infeasibleNights,
-    matchCount: beamState.matchCount,
-    mustAttendCount: beamState.mustAttendCount,
-    mustAttendTotal,
-    scoreSum: beamState.scoreSum || selected.reduce((sum, match) => sum + groundhopperScore(match), 0),
-    averageGroundhopperScore: selected.length ? (beamState.scoreSum || selected.reduce((sum, match) => sum + groundhopperScore(match), 0)) / selected.length : 0,
-    availableMatchCount: trip.matches.length,
+    matchCount: selected.length,
+    mustAttendCount: selected.filter(m => m.mustAttend).length,
+    mustAttendTotal: eligible.filter(m => m.mustAttend).length,
+    purchasedCount: selected.filter(hasTickets).length,
+    scoreSum,
+    averageGroundhopperScore: selected.length ? scoreSum / selected.length : 0,
+    availableMatchCount: eligible.length,
     optimizationMode: currentOptimizationMode,
-    signature
+    signature: planSignature(beamState.dayChains)
   };
 }
 
@@ -1686,116 +1861,357 @@ function diffDescription(basePlan, plan) {
   return parts.join(' · ') || 'Gleiche Spiele, andere Reihenfolge/Route.';
 }
 
+// ---------- Planzustand Tag für Tag fortschreiben ----------
+// Wird von der Optimierung und von der Reparatur ("Keine Tickets") gemeinsam genutzt.
+function initialPlanState(trip, firstDate) {
+  return {
+    dayChains: [],
+    currentLoc: { lat: trip.startAddress.lat, lng: trip.startAddress.lng },
+    // Abfahrt von zu Hause frühestens zur eingestellten Morgen-Startzeit des ersten Spieltags
+    currentTime: timeToDateOnDay(firstDate, state.settings.nextDayStartHour),
+    totalTravelMin: 0,
+    tightNights: 0,
+    infeasibleNights: 0,
+    matchCount: 0,
+    mustAttendCount: 0,
+    purchasedCount: 0,
+    scoreSum: 0
+  };
+}
+
+// Ausgangspunkt für den Folgetag: letztes Stadion des Tages bzw. die dafür eingetragene Übernachtung.
+function overnightOrigin(trip, lastOfDay) {
+  const override = trip.overnightOverrides[lastOfDay.id];
+  return override
+    ? { lat: override.lat, lng: override.lng, fromMatch: lastOfDay, viaOvernight: true }
+    : { lat: lastOfDay.lat, lng: lastOfDay.lng, fromMatch: lastOfDay };
+}
+
+function requiredArrivalTime(match) {
+  const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+  return new Date(new Date(`${match.date}T${match.time}`).getTime() - arrBuffer * 60000);
+}
+
+// Hängt einen Tag (gewählte Spielkette) an einen Planzustand an und liefert den neuen Zustand.
+async function appendDay(planState, trip, date, chain, dropped, nextDate) {
+  // Fahrzeit ab dem Ausgangspunkt (bei Folgetagen: ab dem letzten Stadion, inkl. Übernachtungsfahrt)
+  const dayTravelMin = await computeDayTravelMin(chain, planState.currentLoc);
+
+  // Nacht-Bewertung für das TATSÄCHLICH gewählte erste Spiel dieses Tages
+  let tightAdd = 0, infeasibleAdd = 0;
+  const origin = planState.currentLoc, from = origin.fromMatch;
+  if (from && chain.length > 0 && from.date !== chain[0].date) {
+    const f = await nightCheck(origin, chain[0]);
+    if (!f.feasible) infeasibleAdd = 1;
+    else if (f.extraMinutesUsed > 0) tightAdd = 1;
+  }
+
+  let nextLoc = planState.currentLoc, overnight = null;
+  const lastOfDay = chain.length > 0 ? chain[chain.length - 1] : null;
+  if (lastOfDay) {
+    nextLoc = overnightOrigin(trip, lastOfDay);
+    const override = trip.overnightOverrides[lastOfDay.id];
+    overnight = {
+      fromMatchId: lastOfDay.id, override: !!override,
+      lat: nextLoc.lat, lng: nextLoc.lng, name: override ? override.address : lastOfDay.stadium
+    };
+  }
+
+  return {
+    dayChains: [...planState.dayChains, { date, chain, dropped, overnightAfter: overnight }],
+    currentLoc: nextLoc,
+    currentTime: nextDate ? timeToDateOnDay(nextDate, state.settings.nextDayStartHour) : planState.currentTime,
+    totalTravelMin: planState.totalTravelMin + dayTravelMin,
+    tightNights: planState.tightNights + tightAdd,
+    infeasibleNights: planState.infeasibleNights + infeasibleAdd,
+    matchCount: planState.matchCount + chain.length,
+    mustAttendCount: planState.mustAttendCount + chain.filter(m => m.mustAttend).length,
+    purchasedCount: planState.purchasedCount + chain.filter(hasTickets).length,
+    scoreSum: planState.scoreSum + chainScoreSum(chain)
+  };
+}
+
+function primaryPlanDescription() {
+  if (currentOptimizationMode === "groundhopper_score") return "Beste gefundene Kombination nach durchschnittlichem Groundhopper Score.";
+  if (currentOptimizationMode === "balanced") return "Ausgewogene Kombination aus Spielanzahl (60 %) und Groundhopper Score (40 %).";
+  return "Beste gefundene Kombination nach Tickets, Highlightspielen, Spielanzahl und Fahrzeit.";
+}
+
+// Beschreibt Alternative 2..n als Unterschied zu Alternative 1.
+function annotatePlanDiffs(plans) {
+  plans.forEach((p, i) => {
+    if (i === 0) {
+      p.changedDates = [];
+    } else {
+      p.description = diffDescription(plans[0], p);
+      p.changedDates = Array.from(changedDatesOf(plans[0], p));
+    }
+  });
+}
+
 // ---------- Gesamten Trip optimieren & Alternativen berechnen ----------
 async function buildOptimizedScheduleAlternatives(trip) {
   const myRun = calcRunId;
+  const eligible = planningMatches(trip);
   const byDate = new Map();
-  trip.matches.forEach(m => {
+  eligible.forEach(m => {
     if (!byDate.has(m.date)) byDate.set(m.date, []);
     byDate.get(m.date).push(m);
   });
   const dates = [...byDate.keys()].sort();
   dates.forEach(d => byDate.get(d).sort((a, b) => a.time.localeCompare(b.time)));
 
-  let beam = [{
-    dayChains: [],
-    currentLoc: { lat: trip.startAddress.lat, lng: trip.startAddress.lng },
-    currentTime: new Date(`${dates[0]}T00:00:00`),
-    totalTravelMin: 0,
-    tightNights: 0,
-    infeasibleNights: 0,
-    matchCount: 0,
-    mustAttendCount: 0,
-    scoreSum: 0,
-    availableMatchCount: trip.matches.length
-  }];
+  let beam = [initialPlanState(trip, dates[0])];
 
   for (let d = 0; d < dates.length; d++) {
     const date = dates[d];
     const dayMatches = byDate.get(date);
     const nextDate = dates[d + 1];
-
     const nextBeamMap = new Map();
 
-        for (const beamState of beam) {
-                if (myRun !== calcRunId) throw new Error("abgebrochen");
+    for (const beamState of beam) {
+      if (myRun !== calcRunId) throw new Error("abgebrochen");
       const dayCandidates = await generateDayCandidates(dayMatches, beamState.currentLoc, beamState.currentTime);
 
       for (const cand of dayCandidates) {
-              if (myRun !== calcRunId) throw new Error("abgebrochen");
-        // Fahrzeit ab dem Ausgangspunkt (bei Folgetagen: ab dem letzten Stadion, inkl. Übernachtungsfahrt)
-        const dayTravelMin = await computeDayTravelMin(cand.chain, beamState.currentLoc);
-
-        // Nacht-Bewertung für das TATSÄCHLICH gewählte erste Spiel dieses Tages
-        let tightAdd = 0, infeasibleAdd = 0;
-        const origin = beamState.currentLoc, from = origin.fromMatch;
-        if (from && cand.chain.length > 0) {
-          const first = cand.chain[0];
-          const f = from.date !== first.date ? await nightCheck(origin, first) : { feasible: true, extraMinutesUsed: 0 };
-          if (!f.feasible) infeasibleAdd = 1;
-          else if (f.extraMinutesUsed > 0) tightAdd = 1;
-        }
-
-        // Ausgangspunkt für den Folgetag: letztes gespieltes Stadion bzw. manuell gesetzte Übernachtung
-        let nextLoc = beamState.currentLoc, overnight = null;
-        const lastOfDay = cand.chain.length > 0 ? cand.chain[cand.chain.length - 1] : null;
-        if (lastOfDay) {
-          const override = trip.overnightOverrides[lastOfDay.id];
-          nextLoc = override
-            ? { lat: override.lat, lng: override.lng, fromMatch: lastOfDay, viaOvernight: true }
-            : { lat: lastOfDay.lat, lng: lastOfDay.lng, fromMatch: lastOfDay };
-          overnight = {
-            fromMatchId: lastOfDay.id, override: !!override,
-            lat: nextLoc.lat, lng: nextLoc.lng, name: override ? override.address : lastOfDay.stadium
-          };
-        }
-        const nextTime = nextDate ? timeToDateOnDay(nextDate, state.settings.nextDayStartHour) : beamState.currentTime;
-
-        const newDayChains = [...beamState.dayChains, { date, chain: cand.chain, dropped: cand.dropped, overnightAfter: overnight }];
-        const signature = newDayChains.map(dc => dayChainSignature(dc.chain)).join('|');
-
-        const newState = {
-          dayChains: newDayChains,
-          currentLoc: nextLoc,
-          currentTime: nextTime,
-          totalTravelMin: beamState.totalTravelMin + dayTravelMin,
-          tightNights: beamState.tightNights + tightAdd,
-          infeasibleNights: beamState.infeasibleNights + infeasibleAdd,
-          matchCount: beamState.matchCount + cand.chain.length,
-          mustAttendCount: beamState.mustAttendCount + cand.chain.filter(m => m.mustAttend).length,
-          scoreSum: beamState.scoreSum + cand.chain.reduce((sum, match) => sum + groundhopperScore(match), 0),
-          availableMatchCount: trip.matches.length
-        };
-
+        if (myRun !== calcRunId) throw new Error("abgebrochen");
+        const newState = await appendDay(beamState, trip, date, cand.chain, cand.dropped, nextDate);
+        const signature = planSignature(newState.dayChains);
         const existing = nextBeamMap.get(signature);
-        if (!existing || comparePlans(newState, existing, trip.matches.length) < 0) {
+        if (!existing || comparePlans(newState, existing, eligible.length) < 0) {
           nextBeamMap.set(signature, newState);
         }
       }
     }
 
-    let nextBeam = [...nextBeamMap.values()];
+    const nextBeam = [...nextBeamMap.values()];
     const nextReferenceCount = Math.max(1, ...nextBeam.map(plan => plan.matchCount));
-    nextBeam.sort((a,b) => comparePlans(a,b,nextReferenceCount));
+    nextBeam.sort((a, b) => comparePlans(a, b, nextReferenceCount));
     beam = nextBeam.slice(0, BEAM_WIDTH);
   }
 
   const finalized = beam.map(b => finalizePlanState(b, trip));
   const finalReferenceCount = Math.max(1, ...finalized.map(plan => plan.matchCount));
-  finalized.sort((a,b) => comparePlans(a,b,finalReferenceCount));
+  finalized.sort((a, b) => comparePlans(a, b, finalReferenceCount));
   const diverse = finalized.slice(0, MAX_PLANS);
 
-  diverse.forEach((p, i) => {
-    if (i === 0) {
-      p.description = currentOptimizationMode === "groundhopper_score" ? "Beste gefundene Kombination nach durchschnittlichem Groundhopper Score." : currentOptimizationMode === "balanced" ? "Ausgewogene Kombination aus Spielanzahl (60 %) und Groundhopper Score (40 %)." : "Beste gefundene Kombination nach Highlightspielen, Spielanzahl und Fahrzeit.";
-      p.changedDates = [];
-    } else {
-      p.description = diffDescription(diverse[0], p);
-      p.changedDates = Array.from(changedDatesOf(diverse[0], p));
-    }
-  });
-
+  if (diverse.length) diverse[0].description = primaryPlanDescription();
+  annotatePlanDiffs(diverse);
   return diverse;
+}
+
+// ---------- Keine Tickets: Spiel aus einem Plan nehmen und nur die Lücke neu füllen ----------
+// Alle übrigen Spiele des Plans bleiben unverändert. In die Lücke kommt die beste Kombination
+// noch nicht eingeplanter Spiele desselben Tages, die zeitlich zwischen Vorgänger und Nachfolger
+// passt (inkl. Übernachtungs-/Nachtfahrt-Prüfung zum nächsten Spieltag). Passt nichts, bleibt der Slot frei.
+async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
+  const dayChains = plan.dayChains.map(dc => ({
+    ...dc,
+    chain: [...dc.chain],
+    dropped: dc.dropped.filter(d => d.match.id !== removed.id)
+  }));
+  const dayIdx = dayChains.findIndex(dc => dc.chain.some(m => m.id === removed.id));
+  let note = null, replacement = [];
+
+  if (dayIdx !== -1) {
+    const dc = dayChains[dayIdx];
+    const pos = dc.chain.findIndex(m => m.id === removed.id);
+    const prev = dc.chain[pos - 1] || null;
+    const next = dc.chain[pos + 1] || null;
+    const morning = timeToDateOnDay(dc.date, state.settings.nextDayStartHour);
+
+    // Ausgangspunkt der Lücke: vorheriges Spiel desselben Tages, sonst Übernachtung des Vortags, sonst Start
+    let startLoc, startTime;
+    if (prev) {
+      startLoc = { lat: prev.lat, lng: prev.lng };
+      startTime = calculateMatchEndTime(prev);
+    } else {
+      const prevDc = dayChains.slice(0, dayIdx).reverse().find(x => x.chain.length > 0);
+      startLoc = prevDc
+        ? overnightOrigin(trip, prevDc.chain[prevDc.chain.length - 1])
+        : { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
+      startTime = morning;
+    }
+
+    const nextDayFirst = next ? null
+      : (dayChains.slice(dayIdx + 1).find(x => x.chain.length > 0) || { chain: [] }).chain[0] || null;
+    const inPlan = new Set(dayChains.flatMap(x => x.chain.map(m => m.id)));
+    const pool = planningMatches(trip)
+      .filter(m => m.date === dc.date && !inPlan.has(m.id))
+      .filter(m => (!prev || m.time > prev.time) && (!next || m.time < next.time))
+      .sort((a, b) => a.time.localeCompare(b.time));
+
+    // Eine für das entfernte Spiel eingetragene Übernachtung gilt (im aktiven Plan) für den Ersatz weiter.
+    const removedOverride = !next && transferOverrides ? trip.overnightOverrides[removed.id] : null;
+
+    // Lässt sich nach `last` der Rest des Plans noch erreichen?
+    const fitsBefore = async last => {
+      if (next) {
+        const travel = await getCachedTravelMin(last.lat, last.lng, next.lat, next.lng);
+        return new Date(calculateMatchEndTime(last).getTime() + travel * 60000) <= requiredArrivalTime(next);
+      }
+      if (!nextDayFirst) return true;
+      const own = trip.overnightOverrides[last.id] || removedOverride;
+      const origin = own
+        ? { lat: own.lat, lng: own.lng, fromMatch: last, viaOvernight: true }
+        : { lat: last.lat, lng: last.lng, fromMatch: last };
+      return (await nightCheck(origin, nextDayFirst)).feasible;
+    };
+
+    if (pool.length > 0) {
+      const dp = await computeDayDP(pool, startLoc, startTime);
+      let bestIdx = -1;
+      for (let j = 0; j < dp.length; j++) {
+        if (!dp[j] || !(await fitsBefore(pool[j]))) continue;
+        if (bestIdx === -1 || compareDpStates(dp[j], dp[bestIdx], pool.length)) bestIdx = j;
+      }
+      if (bestIdx !== -1) replacement = reconstructChain(dp, pool, bestIdx);
+    }
+
+    dc.chain.splice(pos, 1, ...replacement);
+    const replacementIds = new Set(replacement.map(m => m.id));
+    dc.dropped = dc.dropped.filter(d => !replacementIds.has(d.match.id));
+
+    const label = `${formatDateShort(dc.date)}: ${shortMatchLabel(removed)} (keine Tickets)`;
+    note = replacement.length
+      ? `${label} → ersetzt durch ${replacement.map(shortMatchLabel).join(', ')}`
+      : `${label} – kein passendes Ersatzspiel, der Slot bleibt frei`;
+
+    // Übernachtungs-/Fahrtag-Adressen des entfernten Spiels auf das neue letzte Spiel des Tages übertragen
+    const newLast = dc.chain[dc.chain.length - 1];
+    if (transferOverrides && !next && newLast) {
+      Object.entries({ ...trip.overnightOverrides }).forEach(([key, value]) => {
+        let target = null;
+        if (key === removed.id) target = newLast.id;
+        else if (key.startsWith(`${removed.id}@`)) target = `${newLast.id}${key.slice(removed.id.length)}`;
+        if (target && !trip.overnightOverrides[target]) trip.overnightOverrides[target] = { ...value };
+      });
+    }
+  }
+
+  // Kennzahlen (Fahrzeit, Nächte, Anzahl, Score) für den geänderten Plan neu berechnen
+  let st = initialPlanState(trip, dayChains[0].date);
+  for (let i = 0; i < dayChains.length; i++) {
+    const dc = dayChains[i];
+    st = await appendDay(st, trip, dc.date, dc.chain, dc.dropped, dayChains[i + 1] && dayChains[i + 1].date);
+  }
+  const repaired = finalizePlanState(st, trip);
+  repaired.optimizationMode = plan.optimizationMode || currentOptimizationMode;
+  repaired.description = plan.description;
+  repaired.repairNotes = [...(plan.repairNotes || []), ...(note ? [note] : [])];
+  return { plan: repaired, note, replacement, wasInPlan: dayIdx !== -1 };
+}
+
+let pendingPlanMessage = null; // einmalige Rückmeldung über dem Plan (z. B. nach "Keine Tickets")
+
+async function markNoTickets(matchId) {
+  const trip = getActiveTrip();
+  const match = trip && trip.matches.find(m => m.id === matchId);
+  if (!match) return;
+  const hasPlans = !!(currentPlans && currentPlans.length && trip.startAddress);
+  const question = `Für „${match.home} vs. ${match.away}“ keine Tickets bekommen?\n\n` +
+    (hasPlans
+      ? "Das Spiel wird aus allen Alternativen genommen. Der Rest des Plans bleibt unverändert – für die Lücke wird nach einem passenden Ersatzspiel gesucht."
+      : "Das Spiel wird bei künftigen Berechnungen nicht mehr berücksichtigt.") +
+    "\n\nDu kannst das jederzeit mit „Doch Tickets bekommen“ rückgängig machen.";
+  if (!confirm(question)) return;
+
+  if (editingMatchId === matchId) resetMatchForm();
+  match.ticketStatus = "no_tickets";
+  saveLocalStorage();
+
+  if (!hasPlans) {
+    renderActiveTrip();
+    return;
+  }
+
+  // Eine evtl. laufende Berechnung abbrechen – sie würde auf veralteten Daten beruhen.
+  const myRun = ++calcRunId;
+  const button = document.getElementById("calculateRouteButton");
+  if (button) button.textContent = "Route berechnen";
+  const switcherEl = document.getElementById("planSwitcher");
+  if (switcherEl) switcherEl.insertAdjacentHTML("afterbegin", '<div class="info-banner">🔎 Suche Ersatz für das Spiel ohne Tickets …</div>');
+  routingEstimated = false;
+
+  try {
+    const active = currentPlans[currentPlanIndex];
+    const results = new Map();
+    // Aktiver Plan zuerst: nur dort werden eingetragene Übernachtungen auf den Ersatz übertragen.
+    for (const p of [active, ...currentPlans.filter(p => p !== active)]) {
+      currentOptimizationMode = p.optimizationMode || trip.optimizationMode || "most_games";
+      results.set(p, await repairPlanWithoutMatch(p, trip, match, p === active));
+      if (myRun !== calcRunId) return; // neuere Berechnung hat übernommen
+    }
+
+    // Reihenfolge der Alternativen beibehalten, zusammengefallene Alternativen entfernen
+    const activeSignature = results.get(active).plan.signature;
+    const seen = new Set(), plans = [];
+    for (const p of currentPlans) {
+      const repaired = results.get(p).plan;
+      if (seen.has(repaired.signature)) continue;
+      seen.add(repaired.signature);
+      plans.push(repaired);
+    }
+    currentOptimizationMode = active.optimizationMode || "most_games";
+    annotatePlanDiffs(plans);
+
+    currentPlans = plans;
+    trip.plans = plans;
+    currentPlanIndex = Math.max(0, plans.findIndex(p => p.signature === activeSignature));
+    trip.selectedPlanSignature = plans[currentPlanIndex].signature;
+    saveLocalStorage();
+
+    const activeResult = results.get(active);
+    pendingPlanMessage = activeResult.wasInPlan
+      ? (activeResult.replacement.length
+        ? { type: "success", text: `✅ ${activeResult.note}` }
+        : { type: "info", text: `ℹ️ ${activeResult.note}` })
+      : { type: "info", text: `ℹ️ ${shortMatchLabel(match)} war in der aktiven Alternative nicht eingeplant – dort ändert sich nichts.` };
+    await renderCurrentPlan();
+  } catch (err) {
+    console.error("Fehler bei der Ersatzsuche:", err);
+    if (myRun === calcRunId) {
+      pendingPlanMessage = { type: "danger", text: "❌ Bei der Ersatzsuche ist ein Fehler aufgetreten. Bitte „Route berechnen“ ausführen." };
+      renderCurrentPlan();
+    }
+  }
+}
+
+// Kennzahlen, die vom Ticketstatus abhängen, ohne Neuberechnung aktualisieren.
+function refreshPlanTicketCounts(trip) {
+  if (!currentPlans) return;
+  const eligible = planningMatches(trip);
+  currentPlans.forEach(p => {
+    p.purchasedCount = p.selected.filter(hasTickets).length;
+    p.availableMatchCount = eligible.length;
+    p.mustAttendTotal = eligible.filter(m => m.mustAttend).length;
+  });
+}
+
+function restoreTickets(matchId) {
+  const trip = getActiveTrip();
+  const match = trip && trip.matches.find(m => m.id === matchId);
+  if (!match) return;
+  match.ticketStatus = null;
+  refreshPlanTicketCounts(trip);
+  saveLocalStorage();
+  if (currentPlans && currentPlans.length) {
+    pendingPlanMessage = { type: "info", text: `ℹ️ ${shortMatchLabel(match)} ist wieder verfügbar. Der Plan bleibt unverändert – mit „Route berechnen“ wird das Spiel wieder berücksichtigt.` };
+    renderCurrentPlan();
+  } else {
+    renderActiveTrip();
+  }
+}
+
+function setTicketStatus(matchId, status) {
+  const trip = getActiveTrip();
+  const match = trip && trip.matches.find(m => m.id === matchId);
+  if (!match) return;
+  match.ticketStatus = TICKET_STATUSES.includes(status) ? status : null;
+  refreshPlanTicketCounts(trip);
+  saveLocalStorage();
+  if (currentPlans && currentPlans.length) renderCurrentPlan();
+  else renderActiveTrip();
 }
 
 // ---------- Hauptberechnung ----------
@@ -1810,12 +2226,16 @@ async function calculateRoute() {
     alert("Bitte gib eine Startadresse und mindestens ein Spiel ein.");
     return;
   }
+  if (planningMatches(trip).length === 0) {
+    alert("Alle Spiele sind als „Keine Tickets“ markiert – es gibt nichts zu berechnen.");
+    return;
+  }
 
   currentOptimizationMode = document.getElementById("optimizationMode")?.value || "most_games";
   trip.optimizationMode = currentOptimizationMode;
 
   const runId = ++calcRunId;
-    if (button) button.textContent = "Berechne … (Klick = neu starten)";
+  if (button) button.textContent = "Berechne … (Klick = neu starten)";
 
   timelineEl.innerHTML = "Berechne optimale Route, Spiele-Anzahl und Alternativen...";
   droppedEl.innerHTML = "";
@@ -1849,7 +2269,7 @@ async function calculateRoute() {
     saveLocalStorage();
 
     await renderCurrentPlan();
-    } catch (err) {
+  } catch (err) {
     if (err && err.message === "abgebrochen") return; // neuere Berechnung läuft
     console.error("Berechnungsfehler:", err);
     if (runId === calcRunId) {
@@ -1895,18 +2315,30 @@ function renderPlanSwitcher(plan) {
     ? '<div class="warning-banner">⚠️ Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen" erneut ausführen.</div>'
     : '';
 
+  let message = "";
+  if (pendingPlanMessage) {
+    const cls = { success: "success-banner", info: "info-banner", danger: "danger-banner" }[pendingPlanMessage.type] || "info-banner";
+    message = `<div class="${cls}">${escapeHtml(pendingPlanMessage.text)}</div>`;
+    pendingPlanMessage = null;
+  }
+  const header = stale + message;
+  const notes = plan.repairNotes && plan.repairNotes.length
+    ? `<details class="repair-notes"><summary>🎟️ Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
+    : '';
+
   if (!currentPlans || currentPlans.length <= 1) {
-    el.innerHTML = stale + `<div class="plan-switcher-single">${planStatsHtml(plan)}</div>`;
+    el.innerHTML = header + `<div class="plan-switcher-single">${planStatsHtml(plan)}${notes}</div>`;
     return;
   }
 
-  el.innerHTML = stale + `
+  el.innerHTML = header + `
     <div class="plan-switcher">
       <button class="btn btn-small" onclick="choosePlan(-1)" aria-label="Vorherige Alternative">←</button>
       <div class="plan-switcher-info">
         <strong>Alternative ${currentPlanIndex + 1} / ${currentPlans.length}</strong>
         <div class="plan-description">${escapeHtml(plan.description)}</div>
         ${planStatsHtml(plan)}
+        ${notes}
       </div>
       <button class="btn btn-small" onclick="choosePlan(1)" aria-label="Nächste Alternative">→</button>
     </div>
@@ -1924,13 +2356,16 @@ function planStatsHtml(plan) {
     nightWarn = ` · ${plan.tightNights} enge Nachtfahrt(en)`;
   }
   const mustLabel = plan.mustAttendTotal > 0 ? ` (${plan.mustAttendCount}/${plan.mustAttendTotal} ⭐)` : '';
+  const trip = getActiveTrip();
+  const ticketTotal = trip ? trip.matches.filter(hasTickets).length : 0;
+  const ticketLabel = ticketTotal > 0 ? ` · 🎟️ ${plan.purchasedCount || 0}/${ticketTotal} mit Tickets` : '';
   const fallbackSum = (plan.selected || []).reduce((sum, match) => sum + groundhopperScore(match), 0);
   const scoreSum = Number.isFinite(plan.scoreSum) ? plan.scoreSum : fallbackSum;
   const averageScore = Math.round(plan.matchCount ? scoreSum / plan.matchCount : 0);
   const maxCount = Math.max(1, ...currentPlans.map(item => item.matchCount));
   const balanced = Math.round(0.6 * (plan.matchCount / maxCount) * 100 + 0.4 * averageScore);
   const modeExtra = plan.optimizationMode === "balanced" ? ` · ⚖️ Ausgewogen ${balanced}/100` : "";
-  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel} · 🏆 Ø ${averageScore}/100${modeExtra} · 🚗 ca. ${travelStr}${nightWarn}<br><span class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</span></div>`;
+  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel}${ticketLabel} · 🏆 Ø ${averageScore}/100${modeExtra} · 🚗 ca. ${travelStr}${nightWarn}<br><span class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</span></div>`;
 }
 
 async function renderDayTiles(plan, trip) {
@@ -1991,16 +2426,17 @@ async function renderDayTiles(plan, trip) {
           <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
         </div>
         <div class="timeline-item match-item">
-          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''} (${matchContextLabel(match)})<br>
+          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(match)} (${matchContextLabel(match)})<br>
           ${scoreHtml(match)}<br>
           ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
+          ${hasTickets(match) ? '' : `<div class="match-actions no-print"><button class="btn btn-small btn-ticket btn-no-tickets" onclick="markNoTickets('${match.id}')" title="Spiel aus dem Plan nehmen und Ersatz suchen">🚫 Keine Tickets bekommen</button></div>`}
         </div>
       `;
 
       currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
     }
 
-        let journeyHtml = "";
+    let journeyHtml = "";
     const nextDc = plan.dayChains.slice(d + 1).find(x => x.chain.length > 0);
     if (nextDc && dc.chain.length > 0) {
       const lastMatch = dc.chain[dc.chain.length - 1];
@@ -2008,7 +2444,12 @@ async function renderDayTiles(plan, trip) {
 
       const override = trip.overnightOverrides[lastMatch.id];
       const opPlan = await planOvernight(lastMatch, nextMatchGuess);
+      // Machbarkeit wie in der Optimierung prüfen – inkl. eigener Übernachtungsadresse und gesetzter Fahrtag-Stopps
+      const night = await nightCheck(overnightOrigin(trip, lastMatch), nextMatchGuess);
       if (myRun !== renderRunId) return;
+      opPlan.feasible = night.feasible;
+      opPlan.extraMinutesUsed = night.extraMinutesUsed;
+      opPlan.missingMin = Math.round(night.missingMin || 0);
       const overnightLoc = override
         ? { lat: override.lat, lng: override.lng, name: override.address }
         : { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName };
@@ -2091,27 +2532,36 @@ async function renderDayTiles(plan, trip) {
     html += journeyHtml;
   }
 
-    if (myRun !== renderRunId) return;
-    const routingWarning = routingEstimated
+  if (myRun !== renderRunId) return;
+  const routingWarning = routingEstimated
     ? '<div class="warning-banner">⚠️ Der Routing-Dienst war nicht erreichbar oder lieferte keine Route – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.</div>'
     : '';
   timelineEl.innerHTML = routingWarning + (html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>');
 
-  if (allDropped.length > 0) {
-    droppedEl.innerHTML = `
-      <div class="dropped-section">
-        <h3>Aussortierte Spiele (${allDropped.length})</h3>
-        ${allDropped.map(dd => `
+  // Spiele ohne Tickets sind nicht Teil der Berechnung; sie werden separat aufgeführt.
+  const visibleDropped = allDropped.filter(dd => !hasNoTickets(dd.match));
+  const noTickets = trip.matches.filter(hasNoTickets);
+  const droppedLine = (m, reasonHtml) => `
           <div class="dropped-match">
-            ${escapeHtml(dd.match.home)} vs. ${escapeHtml(dd.match.away)} –${dd.match.date} ${dd.match.time} Uhr (${escapeHtml(dd.match.leagueName || getLeagueName(dd.match.countryCode, dd.match.leagueLevel))})
-            <span class="reason">Grund: ${escapeHtml(dd.reason)}</span>
-          </div>
-        `).join('')}
-      </div>
-    `;
-  } else {
-    droppedEl.innerHTML = '';
+            ${escapeHtml(m.home)} vs. ${escapeHtml(m.away)} – ${m.date} ${m.time} Uhr (${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))})
+            ${reasonHtml}
+          </div>`;
+  let droppedHtml = "";
+  if (visibleDropped.length > 0) {
+    droppedHtml += `
+      <div class="dropped-section">
+        <h3>Aussortierte Spiele (${visibleDropped.length})</h3>
+        ${visibleDropped.map(dd => droppedLine(dd.match, `<span class="reason">Grund: ${escapeHtml(dd.reason)}</span>`)).join('')}
+      </div>`;
   }
+  if (noTickets.length > 0) {
+    droppedHtml += `
+      <div class="dropped-section no-tickets-section">
+        <h3>🚫 Keine Tickets bekommen (${noTickets.length})</h3>
+        ${noTickets.map(m => droppedLine(m, `<button class="btn btn-small btn-ticket no-print" onclick="restoreTickets('${m.id}')">↩️ Doch Tickets bekommen</button>`)).join('')}
+      </div>`;
+  }
+  droppedEl.innerHTML = droppedHtml;
 }
 
 // ---------- Settings Modal ----------
@@ -2171,7 +2621,7 @@ function exportActiveTrip() {
     version: 1,
     exportedAt: new Date().toISOString(),
     settings: state.settings,
-    trip: trip
+    trip: serializeTrip(trip) // Pläne kompakt (Spiele als ID-Verweise); der Import versteht beide Formate
   };
 
   const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -2257,7 +2707,8 @@ function updateMapMarkers() {
     }
 
     const marker = L.marker([m.lat, m.lng], {
-      icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo)
+      icon: createCrestIcon(m.home, m.away, m.homeLogo, m.awayLogo),
+      opacity: hasNoTickets(m) ? 0.4 : 1 // Spiele ohne Tickets abgeschwächt darstellen
     }).addTo(markersLayer);
 
     marker.bindPopup(matchPopupHtml(m));
