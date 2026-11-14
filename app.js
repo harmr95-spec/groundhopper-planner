@@ -1081,6 +1081,18 @@ function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
     settings: completeSettings(sanitizeSettings(rawTrip.settings || fallbackSettings || cfg())),
     optimizationMode: OPT_MODES.includes(rawTrip.optimizationMode) ? rawTrip.optimizationMode : "most_games"
   };
+  // Bestätigung und KI-One-Pager übernehmen (One-Pager auf die neuen Spiel-IDs umschlüsseln)
+  if (rawTrip.confirmed && typeof rawTrip.confirmed === "object") {
+    trip.confirmed = { at: toText(rawTrip.confirmed.at, 40), planSignature: toText(rawTrip.confirmed.planSignature, 2000) };
+  }
+  if (rawTrip.briefings && typeof rawTrip.briefings === "object" && typeof sanitizeStoredBriefing === "function") {
+    trip.briefings = {};
+    Object.entries(rawTrip.briefings).forEach(([oldId, raw]) => {
+      const target = byOldId.get(oldId), clean = sanitizeStoredBriefing(raw);
+      if (target && clean) trip.briefings[target.id] = clean;
+    });
+  }
+
   if (plans.length) {
     trip.plans = plans;
     if (rawTrip.selectedPlanSignature) trip.selectedPlanSignature = toText(rawTrip.selectedPlanSignature, 2000);
@@ -1353,11 +1365,11 @@ async function cachedReverseGeocode(lat, lng) {
 const DAILY_DRIVE_MIN = 12 * 60; // angenommene Fahrzeit pro freiem Tag
 
 // fetch mit Zeitlimit, damit ein hängender Dienst die Berechnung nie blockiert
-async function fetchWithTimeout(url, ms = 10000) {
+async function fetchWithTimeout(url, ms = 10000, options = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    return await fetch(url, { signal: ctrl.signal });
+    return await fetch(url, { ...options, signal: ctrl.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -2351,6 +2363,7 @@ async function markNoTickets(matchId) {
         : { type: "info", text: activeResult.note })
       : { type: "info", text: `${shortMatchLabel(match)} war in der aktiven Alternative nicht eingeplant – dort ändert sich nichts.` };
     await renderCurrentPlan();
+    if (typeof afterPlanRepaired === "function") afterPlanRepaired();
   } catch (err) {
     console.error("Fehler bei der Ersatzsuche:", err);
     if (myRun === calcRunId) {
@@ -2495,7 +2508,7 @@ function renderPlanSwitcher(plan) {
     message = bannerHtml(pendingPlanMessage.type, escapeHtml(pendingPlanMessage.text));
     pendingPlanMessage = null;
   }
-  const header = stale + message;
+  const header = stale + message + (typeof confirmationHtml === "function" ? confirmationHtml(trip) : "");
   const notes = plan.repairNotes && plan.repairNotes.length
     ? `<details class="repair-notes"><summary>${icon("ticket-x")} Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
@@ -2656,6 +2669,7 @@ async function renderDayTiles(plan, trip) {
             </div>
             <div class="tl-actions no-print">
               ${ticketToggleHtml(match)}
+              ${typeof briefingButtonHtml === "function" ? briefingButtonHtml(match) : ""}
               ${match.clubWebsite ? websiteLinkHtml(match, "link-btn") : ""}
             </div>
           </div>
@@ -2810,6 +2824,7 @@ function toggleSettingsModal() {
   set("weightCompetition", weights.competition);
   set("weightStadium", weights.stadium);
   updateWeightShares();
+  if (typeof loadAiSettingsIntoForm === "function") loadAiSettingsIntoForm();
   modal.style.display = "flex";
   modal.querySelector(".modal-body").scrollTop = 0;
 }
@@ -2831,6 +2846,7 @@ document.addEventListener("keydown", e => {
 });
 
 function saveSettings() {
+  if (typeof saveAiSettingsFromForm === "function") saveAiSettingsFromForm(); // gerätelokal, nicht im Trip
   const settings = cfg(); // Einstellungen des aktiven Trips
   const num = (id, fallback) => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) && v >= 0 ? v : fallback; };
   const time = (id, fallback) => document.getElementById(id).value || fallback;

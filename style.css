@@ -557,6 +557,53 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; bo
   background: var(--surface-3); color: var(--text-muted); font-style: normal; font-size: 0.78rem; font-weight: 600;
 }
 
+/* ---------- KI-One-Pager ---------- */
+.spin { animation: spin 1.2s linear infinite; }
+.confirm-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;
+  padding: 0.75rem 0.9rem; border-radius: var(--radius);
+  background: color-mix(in srgb, var(--violet-soft) 60%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--violet) 25%, transparent);
+}
+.confirm-bar.confirmed { background: color-mix(in srgb, var(--green-soft) 60%, var(--surface)); border-color: color-mix(in srgb, var(--green) 25%, transparent); }
+.confirm-text { display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.88rem; flex: 1; min-width: 240px; }
+.confirm-text > .icon { width: 1.25rem; height: 1.25rem; margin-top: 0.05rem; }
+.confirm-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
+.setting-wide { grid-column: 1 / -1; }
+.unit-btn { display: grid; place-items: center; padding: 0 0.7rem; border: none; border-left: 1px solid var(--border); background: var(--surface-3); color: var(--text-muted); cursor: pointer; }
+.unit-btn:hover { color: var(--text); }
+.ai-test { justify-content: flex-end; }
+.ai-test .btn { width: 100%; }
+.ai-key-status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; margin-top: 0.6rem; color: var(--text-muted); }
+.ai-key-status:empty { display: none; }
+.ai-key-status.ok { color: var(--green); }
+.ai-key-status.error { color: var(--red); }
+.ai-key-status.busy .icon { animation: spin 1.2s linear infinite; }
+
+.briefing-modal { width: 760px; }
+.briefing { display: flex; flex-direction: column; gap: 1rem; font-size: 0.9rem; line-height: 1.55; }
+.bp-intro { font-size: 1rem; padding: 0.8rem 1rem; border-radius: var(--radius); background: var(--surface-3); border-left: 4px solid var(--violet); }
+.bp-section h4 { display: flex; align-items: center; gap: 0.55rem; font-size: 1rem; margin-bottom: 0.55rem; }
+.bp-section h4 .chip { width: 28px; height: 28px; }
+.bp-section h5 { font-size: 0.9rem; margin: 0.6rem 0 0.15rem; }
+.bp-section p { margin-top: 0.35rem; }
+.bp-list { margin: 0.4rem 0 0 1.2rem; }
+.bp-list li { margin-top: 0.2rem; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.4rem; margin: 0.2rem 0 0.4rem; }
+.facts > div { padding: 0.45rem 0.6rem; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
+.facts dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+.facts dd { font-weight: 650; font-size: 0.88rem; }
+.story { padding-left: 0.75rem; border-left: 3px solid var(--border-strong); margin-top: 0.5rem; }
+.story h5 { margin-top: 0; }
+.bp-clubs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.bp-club { padding: 0.7rem 0.8rem; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
+.bp-club h5 { margin-top: 0; font-size: 0.95rem; }
+.bp-club .muted { display: flex; gap: 0.35rem; align-items: flex-start; }
+.bp-footer { font-size: 0.78rem; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 0.7rem; }
+.briefings-print { display: none; }
+@media (max-width: 600px) { .bp-clubs { grid-template-columns: 1fr; } }
+
 /* ---------- Druck ---------- */
 .print-only-inline { display: none; }
 @media print {
@@ -573,6 +620,17 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; bo
   .tl-item { break-inside: avoid; }
   .print-only-inline { display: inline !important; }
   a { color: #000; text-decoration: none; }
+  .confirm-bar { display: none !important; }
+  /* Trip-Druck: One-Pager hinter dem Ablaufplan, jeweils auf neuer Seite */
+  body.printing-trip .briefings-print { display: block; }
+  .print-onepager { break-before: page; }
+  .print-onepager > h2 { font-size: 16pt; }
+  .print-onepager .briefing, .print-onepager .bp-section { break-inside: auto; }
+  .bp-intro, .facts > div, .bp-club { background: #f4f4f4 !important; }
+  /* Einzel-Druck eines One-Pagers: nur diesen zeigen */
+  body.printing-briefing > *:not(#briefingsPrint) { display: none !important; }
+  body.printing-briefing .briefings-print { display: block; }
+  body.printing-briefing .print-onepager { break-before: auto; }
 }
 
 /* ---------- Responsiv ---------- */
