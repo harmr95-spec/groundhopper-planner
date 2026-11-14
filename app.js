@@ -2151,13 +2151,6 @@ async function markNoTickets(matchId) {
   const match = trip && trip.matches.find(m => m.id === matchId);
   if (!match) return;
   const hasPlans = !!(currentPlans && currentPlans.length && trip.startAddress);
-  const question = `Für „${match.home} vs. ${match.away}“ keine Tickets bekommen?\n\n` +
-    (hasPlans
-      ? "Das Spiel wird aus allen Alternativen genommen. Der Rest des Plans bleibt unverändert – für die Lücke wird nach einem passenden Ersatzspiel gesucht."
-      : "Das Spiel wird bei künftigen Berechnungen nicht mehr berücksichtigt.") +
-    "\n\nDu kannst das jederzeit mit „Doch Tickets bekommen“ rückgängig machen.";
-  if (!confirm(question)) return;
-
   if (editingMatchId === matchId) resetMatchForm();
   match.ticketStatus = "no_tickets";
   saveLocalStorage();
