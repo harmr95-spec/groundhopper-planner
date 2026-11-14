@@ -2714,20 +2714,40 @@ function toggleSettingsModal() {
     modal.style.display = "none";
     return;
   }
-  document.getElementById("settingArrivalBuffer").value = cfg().arrivalBufferMin;
-  document.getElementById("settingDepartureBuffer").value = cfg().departureBufferMin;
-  document.getElementById("settingHalfTime").value = cfg().halfTimeMin;
-  document.getElementById("settingStoppageTime").value = cfg().stoppageTimeMin;
-  document.getElementById("settingMaxNightDrive").value = cfg().maxNightDriveTime;
-  document.getElementById("settingNextDayStart").value = cfg().nextDayStartHour;
-  document.getElementById("settingMaxExtraNightDrive").value = cfg().maxExtraNightDriveMin;
-  const weights = cfg().groundhopperWeights || {highlight:40,stage:30,competition:20,stadium:10};
-  document.getElementById("weightHighlight").value = weights.highlight;
-  document.getElementById("weightStage").value = weights.stage;
-  document.getElementById("weightCompetition").value = weights.competition;
-  document.getElementById("weightStadium").value = weights.stadium;
+  const settings = cfg();
+  const set = (id, value) => { document.getElementById(id).value = value; };
+  set("settingArrivalBuffer", settings.arrivalBufferMin);
+  set("settingDepartureBuffer", settings.departureBufferMin);
+  set("settingHalfTime", settings.halfTimeMin);
+  set("settingStoppageTime", settings.stoppageTimeMin);
+  set("settingMaxNightDrive", settings.maxNightDriveTime);
+  set("settingNextDayStart", settings.nextDayStartHour);
+  set("settingMaxExtraNightDrive", settings.maxExtraNightDriveMin);
+  const weights = settings.groundhopperWeights || DEFAULT_WEIGHTS;
+  set("weightHighlight", weights.highlight);
+  set("weightStage", weights.stage);
+  set("weightCompetition", weights.competition);
+  set("weightStadium", weights.stadium);
+  updateWeightShares();
   modal.style.display = "flex";
+  modal.querySelector(".modal-body").scrollTop = 0;
 }
+
+// Zeigt neben jeder Gewichtung den tatsächlichen Anteil in Prozent
+function updateWeightShares() {
+  const ids = ["weightHighlight", "weightStage", "weightCompetition", "weightStadium"];
+  const values = ids.map(id => Math.max(0, parseFloat(document.getElementById(id).value) || 0));
+  const sum = values.reduce((a, b) => a + b, 0);
+  ids.forEach((id, i) => {
+    const el = document.querySelector(`[data-share-for="${id}"]`);
+    if (el) el.textContent = sum ? `${Math.round(values[i] / sum * 100)} %` : "–";
+  });
+}
+
+document.addEventListener("keydown", e => {
+  const modal = document.getElementById("settingsModal");
+  if (e.key === "Escape" && modal && modal.style.display === "flex") toggleSettingsModal();
+});
 
 function saveSettings() {
   const settings = cfg(); // Einstellungen des aktiven Trips
