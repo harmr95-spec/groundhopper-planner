@@ -1422,15 +1422,17 @@ function driveItemHtml({ title, dep, durationMin, arr, arrLabel = "Ankunft", lin
   return `
     <div class="tl-item tl-drive">
       <span class="tl-dot chip chip-sky">${icon("car")}</span>
-      <div class="tl-content">
-        <div class="tl-title">${title}</div>
+      <div class="tl-content drive-panel">
+        <div class="panel-head">
+          <div class="tl-title">${title}</div>
+          <a href="${link}" target="_blank" rel="noopener" class="link-btn no-print" title="Route in Google Maps öffnen">${icon("navigation")} Google Maps</a>
+        </div>
         <div class="tl-meta">
           <span>${icon("clock")} Abfahrt <strong>${dep}</strong></span>
           <span>${icon("route")} ca. ${formatDuration(durationMin)}</span>
           <span>${icon("map-pin")} ${arrLabel} <strong>${arr}</strong></span>
         </div>
         ${extra}
-        <div class="tl-actions"><a href="${link}" target="_blank" rel="noopener" class="link-btn">${icon("navigation")} In Google Maps öffnen</a></div>
       </div>
     </div>`;
 }

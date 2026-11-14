@@ -501,6 +501,13 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; bo
 }
 .groundhopper-score .icon { color: var(--amber); }
 
+.drive-panel {
+  padding: 0.7rem 0.85rem; background: color-mix(in srgb, var(--sky-soft) 55%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--sky) 22%, transparent); border-radius: var(--radius);
+}
+.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.drive-panel .link-btn { background: var(--surface); border: 1px solid var(--border); }
+.drive-panel .banner { margin-bottom: 0; }
 .tl-night .tl-content {
   padding: 0.7rem 0.85rem; background: color-mix(in srgb, var(--violet-soft) 55%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--violet) 22%, transparent); border-radius: var(--radius);
