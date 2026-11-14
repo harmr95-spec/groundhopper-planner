@@ -437,11 +437,11 @@ function renderVenueInfo(venue, message = "") {
   const box = document.getElementById("venueInfo");
   if (!box) return;
   if (venue && venue.capacity) {
-    box.innerHTML = `<span>🏟️ Kapazität: <strong>${venue.capacity.toLocaleString("de-DE")}</strong></span>`;
-    box.style.display = "block";
+    box.innerHTML = `${icon("users", "tone-blue")}<span>Kapazität: <strong>${venue.capacity.toLocaleString("de-DE")}</strong> Plätze</span>`;
+    box.style.display = "flex";
   } else if (message) {
     box.textContent = message;
-    box.style.display = "block";
+    box.style.display = "flex";
   } else {
     box.textContent = "";
     box.style.display = "none";
@@ -565,10 +565,10 @@ async function setStartAddress() {
     const trip = getActiveTrip();
     trip.startAddress = { address, lat: coords.lat, lng: coords.lng, countryCode: coords.countryCode };
     saveLocalStorage();
-    statusEl.innerText = "✓ Gespeichert!";
+    statusEl.innerHTML = `${icon("circle-check", "tone-green")} Gespeichert`;
     renderActiveTrip();
   } else {
-    statusEl.innerText = "❌ Adresse nicht gefunden.";
+    statusEl.innerHTML = `${icon("circle-x", "tone-red")} Adresse nicht gefunden`;
   }
 }
 
@@ -645,7 +645,7 @@ function groundhopperScore(match) { return matchScoreDetails(match).score; }
 
 function scoreHtml(match) {
   const d = matchScoreDetails(match);
-  return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Liga-Level/Pokalphase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">🏆 Groundhopper Score: <strong>${d.score}/100</strong></span>`;
+  return `<span class="groundhopper-score" title="Highlight ${d.highlight}% · Liga-Level/Pokalphase ${d.stage}% · Wettbewerbsart ${d.competition}% · Stadion ${d.stadium}%">${icon("trophy")} Score <strong>${d.score}</strong>/100</span>`;
 }
 
 function matchContextLabel(match) {
@@ -880,6 +880,20 @@ function deleteMatch(matchId) {
   renderActiveTrip();
 }
 
+// ---------- Kartenmarker ----------
+const ROUTE_STYLE = { color: "#16a34a", weight: 5, opacity: 0.85, lineCap: "round" };
+const PIN_KINDS = { home: { icon: "house", cls: "pin-home" }, night: { icon: "moon", cls: "pin-night" } };
+function pinIcon(kind) {
+  const k = PIN_KINDS[kind];
+  return L.divIcon({
+    className: "pin-wrapper",
+    html: `<div class="pin ${k.cls}">${icon(k.icon)}</div>`,
+    iconSize: [34, 42],
+    iconAnchor: [17, 40],
+    popupAnchor: [0, -36]
+  });
+}
+
 // ---------- Crest Marker ----------
 function createCrestIcon(home, away, homeLogo, awayLogo) {
   const cleanHomeLogo = safeHttpUrl(homeLogo);
@@ -895,15 +909,27 @@ function createCrestIcon(home, away, homeLogo, awayLogo) {
 
   return L.divIcon({
     className: 'custom-crest-marker-wrapper',
-    html: `<div class="match-crest-marker">${homeContent} <span class="colon">:</span> ${awayContent}</div>`,
-    iconSize: [80, 30],
-    iconAnchor: [40, 15]
+    html: `<div class="match-crest-marker">${homeContent}<span class="colon">:</span>${awayContent}</div>`,
+    iconSize: [84, 34],
+    iconAnchor: [42, 17]
   });
 }
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+// ---------- UI-Bausteine ----------
+const BANNER_ICONS = { warning: "triangle-alert", danger: "circle-x", info: "info", success: "circle-check" };
+function bannerHtml(type, html, iconName = null) {
+  return `<div class="banner banner-${type}">${icon(iconName || BANNER_ICONS[type] || "info")}<div>${html}</div></div>`;
+}
+const starHtml = () => `<span class="must-badge" title="Highlightspiel">${icon("star", "icon-fill")}</span>`;
+const fmtTime = d => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+function crestImg(url, alt) {
+  const clean = safeHttpUrl(url);
+  return clean ? `<img class="crest" src="${escapeHtml(clean)}" alt="${escapeHtml(alt)}" loading="lazy" onerror="this.remove()">` : "";
 }
 
 function safeHttpUrl(value) {
@@ -1090,7 +1116,7 @@ function renderActiveTrip() {
     renderMatchList();
     updateMapMarkers();
 
-    document.getElementById("timeline").innerHTML = '<p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>';
+    document.getElementById("timeline").innerHTML = `<div class="empty-state">${icon("map", "tone-green")}<p>Füge Spiele hinzu und klicke auf „Route berechnen“.</p></div>`;
     document.getElementById("droppedSection").innerHTML = '';
     const switcherEl = document.getElementById("planSwitcher");
     if (switcherEl) switcherEl.innerHTML = '';
@@ -1101,7 +1127,7 @@ function renderActiveTrip() {
 function websiteLinkHtml(m, className = "") {
   const url = safeHttpUrl(m.clubWebsite);
   if (!url) return "";
-  const label = className.includes("compact") ? "🔗 Tickets-Website" : "🔗 Vereinswebsite / Tickets";
+  const label = `${icon("external-link")} ${className.includes("compact") ? "Website" : "Vereinswebsite / Tickets"}`;
   return `<a class="club-website-link ${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
 
@@ -1110,8 +1136,8 @@ function websiteLinkHtml(m, className = "") {
 function ticketToggleHtml(m, extraClass = "") {
   const yes = hasTickets(m), no = hasNoTickets(m);
   return `<div class="ticket-toggle ${extraClass}" role="group" aria-label="Ticketstatus">
-      <button type="button" class="tt-opt tt-yes${yes ? ' active' : ''}" aria-pressed="${yes}" onclick="toggleTicket('${m.id}', 'purchased')" title="${yes ? 'Markierung entfernen' : 'Tickets gekauft – Spiel wird fest eingeplant'}">🎟️ Tickets</button>
-      <button type="button" class="tt-opt tt-no${no ? ' active' : ''}" aria-pressed="${no}" onclick="toggleTicket('${m.id}', 'no_tickets')" title="${no ? 'Markierung entfernen' : 'Keine Tickets bekommen – Spiel fliegt raus, Ersatz wird gesucht'}">🚫 Keine</button>
+      <button type="button" class="tt-opt tt-yes${yes ? ' active' : ''}" aria-pressed="${yes}" onclick="toggleTicket('${m.id}', 'purchased')" title="${yes ? 'Markierung entfernen' : 'Tickets gekauft – Spiel wird fest eingeplant'}">${icon("ticket-check")} Tickets</button>
+      <button type="button" class="tt-opt tt-no${no ? ' active' : ''}" aria-pressed="${no}" onclick="toggleTicket('${m.id}', 'no_tickets')" title="${no ? 'Markierung entfernen' : 'Keine Tickets bekommen – Spiel fliegt raus, Ersatz wird gesucht'}">${icon("ticket-x")} Keine</button>
     </div>`;
 }
 
@@ -1127,10 +1153,10 @@ function toggleTicket(matchId, status) {
 // Selten benötigte Aktionen eines Spiels im ⋯-Menü
 function matchMenuHtml(m) {
   return `<details class="menu match-menu">
-      <summary class="menu-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">⋯</summary>
+      <summary class="menu-trigger" title="Weitere Aktionen" aria-label="Weitere Aktionen">${icon("ellipsis")}</summary>
       <div class="menu-list">
-        <button type="button" onclick="closeMenus(); editMatch('${m.id}')">✏️ Bearbeiten</button>
-        <button type="button" class="menu-danger" onclick="closeMenus(); deleteMatch('${m.id}')">🗑️ Löschen</button>
+        <button type="button" onclick="closeMenus(); editMatch('${m.id}')">${icon("pencil", "tone-blue")} Bearbeiten</button>
+        <button type="button" class="menu-danger" onclick="closeMenus(); deleteMatch('${m.id}')">${icon("trash-2")} Löschen</button>
       </div>
     </details>`;
 }
@@ -1144,8 +1170,8 @@ document.addEventListener("click", e => closeMenus(e.target.closest("details.men
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenus(); });
 
 function ticketBadgeHtml(m) {
-  if (hasTickets(m)) return ' <span class="ticket-badge ticket-badge-ok" title="Tickets gekauft">🎟️ Tickets</span>';
-  if (hasNoTickets(m)) return ' <span class="ticket-badge ticket-badge-none" title="Keine Tickets bekommen">🚫 Keine Tickets</span>';
+  if (hasTickets(m)) return ' <span class="ticket-badge ticket-badge-ok" title="Tickets gekauft">' + icon("ticket-check") + ' Tickets</span>';
+  if (hasNoTickets(m)) return ' <span class="ticket-badge ticket-badge-none" title="Keine Tickets bekommen">' + icon("ticket-x") + ' Keine Tickets</span>';
   return "";
 }
 
@@ -1154,12 +1180,12 @@ function capacityHtml(m) {
 }
 
 function matchPopupHtml(m) {
-  const fullAddress = m.resolvedAddress ? `<br>📍 <small style="color:#555;">${escapeHtml(m.resolvedAddress)}</small>` : '';
+  const fullAddress = m.resolvedAddress ? `<br><small class="muted">${escapeHtml(m.resolvedAddress)}</small>` : '';
 
-  return `<b>${escapeHtml(m.home)} vs. ${escapeHtml(m.away)}</b>${m.mustAttend ? ' <span class="must-badge">⭐</span>' : ''}${ticketBadgeHtml(m)}<br>
+  return `<div class="popup"><b>${escapeHtml(m.home)} – ${escapeHtml(m.away)}</b>${m.mustAttend ? ' ' + starHtml() : ''}${ticketBadgeHtml(m)}<br>
     ${escapeHtml(m.leagueName || getLeagueName(m.countryCode, m.leagueLevel))}<br>
-    🏟️ <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
-    📅 ${m.date} um ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}`;
+    ${icon("map-pin", "tone-rose")} <b>${escapeHtml(m.stadium)}</b>${capacityHtml(m)}${fullAddress}<br>
+    ${icon("calendar", "tone-blue")} ${formatDateShort(m.date)} · ${m.time} Uhr${m.clubWebsite ? `<br>${websiteLinkHtml(m)}` : ""}</div>`;
 }
 
 // Rendert die Match-Liste in der Sidebar mit Berücksichtigung der Alternativen (Dunkelgrün / Helles Grün)
@@ -1196,7 +1222,7 @@ function renderMatchList() {
         if (plansWithMatch.length === totalPlans) {
           // In JEDER Alternative enthalten -> Dunkelgrün
           statusClass = "status-selected";
-          reasonHtml = `<div class="reason alt-reason">✓ In allen Alternativen enthalten</div>`;
+          reasonHtml = `<div class="reason alt-reason">${icon("circle-check")} In allen Alternativen enthalten</div>`;
         } else if (plansWithMatch.length > 0) {
           // Nur in EINZELNEN Alternativen enthalten -> Helles Grün
           statusClass = "status-alternative";
@@ -1215,12 +1241,12 @@ function renderMatchList() {
     <li class="match-list-item ${statusClass}">
       <div class="match-card-head">
         <div class="match-card-title">
-          <strong>${escapeHtml(m.home)} – ${escapeHtml(m.away)}</strong>${m.mustAttend ? ' <span class="must-badge" title="Highlightspiel">⭐</span>' : ''}
+          ${crestImg(m.homeLogo, m.home)}<strong>${escapeHtml(m.home)} – ${escapeHtml(m.away)}</strong>${m.mustAttend ? ' ' + starHtml() : ''}
         </div>
         ${matchMenuHtml(m)}
       </div>
-      <div class="match-card-meta">📅 ${formatDateShort(m.date)} · ${m.time} Uhr · ${leagueLabel}</div>
-      <div class="match-card-meta">📍 ${escapeHtml(m.stadium)}${capacityHtml(m)}</div>
+      <div class="match-card-meta">${icon("calendar", "tone-blue")} ${formatDateShort(m.date)} · ${m.time} Uhr <span class="dot-sep">·</span> ${leagueLabel}</div>
+      <div class="match-card-meta">${icon("map-pin", "tone-rose")} ${escapeHtml(m.stadium)}${capacityHtml(m)}</div>
       ${reasonHtml}
       <div class="match-card-foot">
         ${ticketToggleHtml(m)}
@@ -1391,50 +1417,86 @@ async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
   return days;
 }
 
+// ---------- Timeline-Bausteine ----------
+function driveItemHtml({ title, dep, durationMin, arr, arrLabel = "Ankunft", link, extra = "" }) {
+  return `
+    <div class="tl-item tl-drive">
+      <span class="tl-dot chip chip-sky">${icon("car")}</span>
+      <div class="tl-content">
+        <div class="tl-title">${title}</div>
+        <div class="tl-meta">
+          <span>${icon("clock")} Abfahrt <strong>${dep}</strong></span>
+          <span>${icon("route")} ca. ${formatDuration(durationMin)}</span>
+          <span>${icon("map-pin")} ${arrLabel} <strong>${arr}</strong></span>
+        </div>
+        ${extra}
+        <div class="tl-actions"><a href="${link}" target="_blank" rel="noopener" class="link-btn">${icon("navigation")} In Google Maps öffnen</a></div>
+      </div>
+    </div>`;
+}
+
+function overnightItemHtml({ title, name, body = "", warning = "", inputId, key, override, links = [] }) {
+  return `
+    <div class="tl-item tl-night overnight-block">
+      <span class="tl-dot chip chip-violet">${icon("moon")}</span>
+      <div class="tl-content">
+        <div class="tl-title">${title}</div>
+        <div class="tl-place">${icon("bed-double")} ${escapeHtml(name)}</div>
+        ${warning}
+        ${body}
+        <div class="input-row no-print">
+          <input type="text" id="${inputId}" placeholder="Eigene Übernachtungsadresse" value="${escapeHtml(name)}" />
+          <button class="btn btn-soft" onclick="saveOvernightOverride('${key}', '${inputId}')">Übernehmen</button>
+          ${override ? `<button class="btn btn-ghost" onclick="clearOvernightOverride('${key}')" title="Vorschlag wiederherstellen">Zurücksetzen</button>` : ''}
+        </div>
+        <div class="tl-actions">${links.map(l => `<a href="${l.href}" target="_blank" rel="noopener" class="link-btn${l.icon === "hotel" ? " link-violet" : ""}">${icon(l.icon)} ${l.text}</a>`).join("")}</div>
+      </div>
+    </div>`;
+}
+
+function formatDuration(min) {
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`;
+}
+
 // Zeichnet die Fahrtage auf der Karte und liefert das HTML der Tageskacheln (null = Lauf veraltet).
 async function renderJourneyTiles(days, myRun) {
-  const fmt = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const fmt = fmtTime;
   let out = "";
   for (const day of days) {
     const leg = await getCachedRoute(day.from.lat, day.from.lng, day.to.lat, day.to.lng);
     if (myRun !== renderRunId) return null;
-    if (leg.geometry) L.geoJSON(leg.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
-    L.marker([day.to.lat, day.to.lng]).bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
+    if (leg.geometry) L.geoJSON(leg.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
+    L.marker([day.to.lat, day.to.lng], { icon: pinIcon("night") }).bindPopup(`<b>Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
 
     const driveMin = leg.durationMin;
     const dep = timeToDateOnDay(day.date, cfg().nextDayStartHour);
     const arr = new Date(dep.getTime() + driveMin * 60000);
     const inputId = `driveStopInput_${day.key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const longWarning = driveMin > DAILY_DRIVE_MIN
-      ? `<div class="warning-banner">⚠️ Mehr als ${DAILY_DRIVE_MIN / 60} Stunden Fahrzeit an diesem Tag – ggf. einen früheren Stopp wählen.</div>`
+      ? bannerHtml("warning", `Mehr als ${DAILY_DRIVE_MIN / 60} Stunden Fahrzeit an diesem Tag – ggf. einen früheren Stopp wählen.`)
       : '';
 
     out += `
-      <div class="day-tile">
+      <div class="day-tile day-tile-travel">
         <div class="day-tile-header">
           <h3>${formatDateLong(day.date)}</h3>
-          <span class="tile-changed-badge">${day.label || "🚗 Fahrtag"}</span>
+          <span class="tile-badge tile-badge-travel">${day.label || `${icon("car")} Fahrtag`}</span>
         </div>
         <div class="day-tile-body">
-          <div class="timeline-item">
-            <strong>🚗 Fahrt nach ${escapeHtml(day.to.name)}</strong><br>
-            Abfahrt: ${fmt(dep)} Uhr | Fahrzeit: ca. ${driveMin} Min.<br>
-            Ankunft: ca. ${fmt(arr)} Uhr
-            ${longWarning}
-            <br><a href="${generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng)}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
-          </div>
-          <div class="timeline-item overnight-block">
-            <h4>🌙 Übernachtung</h4>
-            <p class="print-only"><strong>Adresse:</strong> ${escapeHtml(day.to.name)}</p>
-            ${day.override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
-            <p class="settings-hint">Andere Adresse eintragen (z. B. weiter fahren): Die Tage danach rechnen ab dort neu.</p>
-            <div class="form-row">
-              <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(day.to.name)}" />
-              <button class="btn btn-small" onclick="saveOvernightOverride('${day.key}', '${inputId}')">Übernehmen</button>
-              ${day.override ? `<button class="btn btn-small btn-secondary" onclick="clearOvernightOverride('${day.key}')">Vorschlag zurücksetzen</button>` : ''}
-            </div>
-            <a href="${generateHotelSearchLink(day.to.lat, day.to.lng)}" target="_blank" class="deeplink-btn hotel-btn">🏨 Unterkünfte hier suchen</a>
-          </div>
+          ${driveItemHtml({
+            title: `Fahrt nach ${escapeHtml(day.to.name)}`,
+            dep: fmt(dep), durationMin: driveMin, arr: fmt(arr), arrLabel: "Ankunft ca.",
+            link: generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng),
+            extra: longWarning
+          })}
+          ${overnightItemHtml({
+            title: "Übernachtung",
+            name: day.to.name,
+            body: day.override ? "" : `<p class="muted">Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen. Bei anderer Adresse rechnen die Folgetage ab dort neu.</p>`,
+            inputId, key: day.key, override: day.override,
+            links: [{ href: generateHotelSearchLink(day.to.lat, day.to.lng), icon: "hotel", text: "Unterkünfte suchen" }]
+          })}
         </div>
       </div>
     `;
@@ -2245,9 +2307,9 @@ async function markNoTickets(matchId) {
   // Eine evtl. laufende Berechnung abbrechen – sie würde auf veralteten Daten beruhen.
   const myRun = ++calcRunId;
   const button = document.getElementById("calculateRouteButton");
-  if (button) button.textContent = "Route berechnen";
+  setCalcButtonBusy(false);
   const switcherEl = document.getElementById("planSwitcher");
-  if (switcherEl) switcherEl.insertAdjacentHTML("afterbegin", '<div class="info-banner">🔎 Suche Ersatz für das Spiel ohne Tickets …</div>');
+  if (switcherEl) switcherEl.insertAdjacentHTML("afterbegin", bannerHtml("info", "Suche Ersatz für das Spiel ohne Tickets …", "search"));
   routingEstimated = false;
 
   try {
@@ -2283,14 +2345,14 @@ async function markNoTickets(matchId) {
     const activeResult = results.get(active);
     pendingPlanMessage = activeResult.wasInPlan
       ? (activeResult.replacement.length
-        ? { type: "success", text: `✅ ${activeResult.note}` }
-        : { type: "info", text: `ℹ️ ${activeResult.note}` })
-      : { type: "info", text: `ℹ️ ${shortMatchLabel(match)} war in der aktiven Alternative nicht eingeplant – dort ändert sich nichts.` };
+        ? { type: "success", text: activeResult.note }
+        : { type: "info", text: activeResult.note })
+      : { type: "info", text: `${shortMatchLabel(match)} war in der aktiven Alternative nicht eingeplant – dort ändert sich nichts.` };
     await renderCurrentPlan();
   } catch (err) {
     console.error("Fehler bei der Ersatzsuche:", err);
     if (myRun === calcRunId) {
-      pendingPlanMessage = { type: "danger", text: "❌ Bei der Ersatzsuche ist ein Fehler aufgetreten. Bitte „Route berechnen“ ausführen." };
+      pendingPlanMessage = { type: "danger", text: "Bei der Ersatzsuche ist ein Fehler aufgetreten. Bitte „Route berechnen“ ausführen." };
       renderCurrentPlan();
     }
   }
@@ -2319,6 +2381,13 @@ function setTicketStatus(matchId, status) {
 }
 
 // ---------- Hauptberechnung ----------
+function setCalcButtonBusy(busy) {
+  const button = document.getElementById("calculateRouteButton");
+  if (!button) return;
+  button.classList.toggle("is-busy", busy);
+  button.querySelector(".btn-text").textContent = busy ? "Berechne … (Klick = neu starten)" : "Route berechnen";
+}
+
 async function calculateRoute() {
   const trip = getActiveTrip();
   const timelineEl = document.getElementById("timeline");
@@ -2339,9 +2408,9 @@ async function calculateRoute() {
   trip.optimizationMode = currentOptimizationMode;
 
   const runId = ++calcRunId;
-  if (button) button.textContent = "Berechne … (Klick = neu starten)";
+  setCalcButtonBusy(true);
 
-  timelineEl.innerHTML = "Berechne optimale Route, Spiele-Anzahl und Alternativen...";
+  timelineEl.innerHTML = `<div class="empty-state loading">${icon("route", "tone-green")}<p>Berechne optimale Route und Alternativen …</p></div>`;
   droppedEl.innerHTML = "";
   if (switcherEl) switcherEl.innerHTML = "";
   routeLayer.clearLayers();
@@ -2353,7 +2422,7 @@ async function calculateRoute() {
     currentPlans = plans;
 
     if (!currentPlans || currentPlans.length === 0) {
-      timelineEl.innerHTML = '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>';
+      timelineEl.innerHTML = `<div class="empty-state">${icon("calendar", "tone-amber")}<p>Kein Spiel konnte zeitlich eingeplant werden.</p></div>`;
       lastSelectedMatchIds = new Set();
       updateMapMarkers();
       return;
@@ -2377,10 +2446,10 @@ async function calculateRoute() {
     if (err && err.message === "abgebrochen") return; // neuere Berechnung läuft
     console.error("Berechnungsfehler:", err);
     if (runId === calcRunId) {
-      timelineEl.innerHTML = '<div class="danger-banner">❌ Bei der Berechnung ist ein Fehler aufgetreten. Details stehen in der Browser-Konsole.</div>';
+      timelineEl.innerHTML = bannerHtml("danger", "Bei der Berechnung ist ein Fehler aufgetreten. Details stehen in der Browser-Konsole.");
     }
   } finally {
-    if (runId === calcRunId && button) button.textContent = "Route berechnen";
+    if (runId === calcRunId) setCalcButtonBusy(false);
   }
 }
 
@@ -2416,18 +2485,17 @@ function renderPlanSwitcher(plan) {
 
   const trip = getActiveTrip();
   const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== JSON.stringify(cfg())
-    ? '<div class="warning-banner">⚠️ Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen" erneut ausführen.</div>'
+    ? bannerHtml("warning", 'Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen“ erneut ausführen.')
     : '';
 
   let message = "";
   if (pendingPlanMessage) {
-    const cls = { success: "success-banner", info: "info-banner", danger: "danger-banner" }[pendingPlanMessage.type] || "info-banner";
-    message = `<div class="${cls}">${escapeHtml(pendingPlanMessage.text)}</div>`;
+    message = bannerHtml(pendingPlanMessage.type, escapeHtml(pendingPlanMessage.text));
     pendingPlanMessage = null;
   }
   const header = stale + message;
   const notes = plan.repairNotes && plan.repairNotes.length
-    ? `<details class="repair-notes"><summary>🎟️ Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
+    ? `<details class="repair-notes"><summary>${icon("ticket-x")} Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
 
   if (!currentPlans || currentPlans.length <= 1) {
@@ -2437,39 +2505,40 @@ function renderPlanSwitcher(plan) {
 
   el.innerHTML = header + `
     <div class="plan-switcher">
-      <button class="btn btn-small" onclick="choosePlan(-1)" aria-label="Vorherige Alternative">←</button>
+      <button class="icon-btn icon-btn-lg" onclick="choosePlan(-1)" aria-label="Vorherige Alternative">${icon("chevron-left")}</button>
       <div class="plan-switcher-info">
         <strong>Alternative ${currentPlanIndex + 1} / ${currentPlans.length}</strong>
         <div class="plan-description">${escapeHtml(plan.description)}</div>
         ${planStatsHtml(plan)}
         ${notes}
       </div>
-      <button class="btn btn-small" onclick="choosePlan(1)" aria-label="Nächste Alternative">→</button>
+      <button class="icon-btn icon-btn-lg" onclick="choosePlan(1)" aria-label="Nächste Alternative">${icon("chevron-right")}</button>
     </div>
   `;
 }
 
 function planStatsHtml(plan) {
-  const hrs = Math.floor(plan.totalTravelMin / 60);
-  const mins = Math.round(plan.totalTravelMin % 60);
-  const travelStr = `${hrs > 0 ? hrs + ' h ' : ''}${mins} Min.`;
-  let nightWarn = "";
-  if (plan.infeasibleNights > 0) {
-    nightWarn = ` · <span style="color:#dc3545;">${plan.infeasibleNights} Übernachtung(en) eng/nicht machbar</span>`;
-  } else if (plan.tightNights > 0) {
-    nightWarn = ` · ${plan.tightNights} enge Nachtfahrt(en)`;
-  }
-  const mustLabel = plan.mustAttendTotal > 0 ? ` (${plan.mustAttendCount}/${plan.mustAttendTotal} ⭐)` : '';
   const trip = getActiveTrip();
   const ticketTotal = trip ? trip.matches.filter(hasTickets).length : 0;
-  const ticketLabel = ticketTotal > 0 ? ` · 🎟️ ${plan.purchasedCount || 0}/${ticketTotal} mit Tickets` : '';
   const fallbackSum = (plan.selected || []).reduce((sum, match) => sum + groundhopperScore(match), 0);
   const scoreSum = Number.isFinite(plan.scoreSum) ? plan.scoreSum : fallbackSum;
   const averageScore = Math.round(plan.matchCount ? scoreSum / plan.matchCount : 0);
   const maxCount = Math.max(1, ...currentPlans.map(item => item.matchCount));
   const balanced = Math.round(0.6 * (plan.matchCount / maxCount) * 100 + 0.4 * averageScore);
-  const modeExtra = plan.optimizationMode === "balanced" ? ` · ⚖️ Ausgewogen ${balanced}/100` : "";
-  return `<div class="plan-stats">⚽ ${plan.matchCount} Spiele${mustLabel}${ticketLabel} · 🏆 Ø ${averageScore}/100${modeExtra} · 🚗 ca. ${travelStr}${nightWarn}<br><span class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</span></div>`;
+
+  const pill = (tone, iconName, html, title = "") =>
+    `<span class="stat-pill stat-${tone}"${title ? ` title="${title}"` : ""}>${icon(iconName)} ${html}</span>`;
+  const pills = [
+    pill("green", "goal", `<strong>${plan.matchCount}</strong> Spiele`),
+    plan.mustAttendTotal > 0 ? pill("amber", "star", `<strong>${plan.mustAttendCount}/${plan.mustAttendTotal}</strong> Highlights`) : "",
+    ticketTotal > 0 ? pill("green", "ticket-check", `<strong>${plan.purchasedCount || 0}/${ticketTotal}</strong> mit Tickets`) : "",
+    pill("amber", "trophy", `Ø <strong>${averageScore}</strong>/100`, "Durchschnittlicher Groundhopper Score"),
+    plan.optimizationMode === "balanced" ? pill("blue", "scale", `<strong>${balanced}</strong>/100`, "Ausgewogen-Wert") : "",
+    pill("sky", "car", `ca. <strong>${formatDuration(plan.totalTravelMin)}</strong>`, "Gesamtfahrzeit"),
+    plan.infeasibleNights > 0 ? pill("red", "triangle-alert", `${plan.infeasibleNights} Nacht/Nächte nicht machbar`)
+      : plan.tightNights > 0 ? pill("amber", "moon", `${plan.tightNights} enge Nachtfahrt(en)`) : ""
+  ].filter(Boolean).join("");
+  return `<div class="plan-stats">${pills}</div><div class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</div>`;
 }
 
 async function renderDayTiles(plan, trip) {
@@ -2509,7 +2578,7 @@ async function renderDayTiles(plan, trip) {
         to = { lat: p.lat, lng: p.lng, name };
       }
     }
-    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, label: "🧳 Anreisetag" };
+    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, label: `${icon("luggage")} Anreisetag` };
     drivenDates.add(date);
   }
   let arrivalRendered = false;
@@ -2532,13 +2601,13 @@ async function renderDayTiles(plan, trip) {
       Array.isArray(plan.changedDates) ? plan.changedDates.includes(dc.date) : plan.changedDates.has(dc.date)
     );
     const changedBadge = isChanged
-      ? '<span class="tile-changed-badge" title="Unterscheidet sich von Alternative 1">◆ geändert</span>'
+      ? `<span class="tile-badge tile-badge-changed" title="Unterscheidet sich von Alternative 1">${icon("diamond")} geändert</span>`
       : '';
 
     let tileBody = "";
 
     if (dc.chain.length === 0) {
-      tileBody = '<p class="placeholder-text">Kein Spiel eingeplant.</p>';
+      tileBody = `<p class="empty-day">${icon("calendar")} Kein Spiel eingeplant</p>`;
     }
 
     for (let i = 0; i < dc.chain.length; i++) {
@@ -2547,7 +2616,7 @@ async function renderDayTiles(plan, trip) {
       if (myRun !== renderRunId) return;
 
       if (osrm.geometry) {
-        L.geoJSON(osrm.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
+        L.geoJSON(osrm.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
       }
 
       const kickOff = new Date(`${match.date}T${match.time}`);
@@ -2560,19 +2629,34 @@ async function renderDayTiles(plan, trip) {
       const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
       const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
 
+      tileBody += driveItemHtml({
+        title: `Fahrt nach ${escapeHtml(match.stadium)}`,
+        dep: depPrefix + fmtTime(departureTime), durationMin: osrm.durationMin, arr: fmtTime(targetArrival),
+        arrLabel: "Am Stadion", link: deeplink
+      });
       tileBody += `
-        <div class="timeline-item">
-          <strong>🚗 Fahrt nach ${escapeHtml(match.stadium)}</strong><br>
-          Abfahrt: ${depPrefix}${departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr | Fahrzeit: ca. ${osrm.durationMin} Min.<br>
-          Ankunft am Stadion: ${targetArrival.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr
-          <br>
-          <a href="${deeplink}" target="_blank" class="deeplink-btn">In Google Maps öffnen</a>
-        </div>
-        <div class="timeline-item match-item">
-          <strong>⚽ ${escapeHtml(match.home)} vs. ${escapeHtml(match.away)}</strong> ${match.mustAttend ? '<span class="must-badge">⭐</span>' : ''}<span class="print-only-inline">${ticketBadgeHtml(match)}</span> (${matchContextLabel(match)})<br>
-          ${scoreHtml(match)}<br>
-          ${match.date} | Anstoß: ${match.time} Uhr | Stadion: ${escapeHtml(match.stadium)}${capacityHtml(match)}${match.clubWebsite ? `<br>${websiteLinkHtml(match)}` : ""}
-          <div class="match-actions no-print">${ticketToggleHtml(match)}</div>
+        <div class="tl-item tl-match match-item">
+          <span class="tl-dot chip chip-green">${icon("goal")}</span>
+          <div class="tl-content match-panel">
+            <div class="match-panel-head">
+              <div class="match-teams">
+                ${crestImg(match.homeLogo, match.home)}
+                <span class="tl-title">${escapeHtml(match.home)} <span class="vs">–</span> ${escapeHtml(match.away)}</span>
+                ${crestImg(match.awayLogo, match.away)}
+                ${match.mustAttend ? starHtml() : ''}<span class="print-only-inline">${ticketBadgeHtml(match)}</span>
+              </div>
+              <span class="kickoff">${icon("whistle")} ${match.time} Uhr</span>
+            </div>
+            <div class="tl-meta">
+              <span>${icon("shield-half")} ${matchContextLabel(match)}</span>
+              <span>${icon("map-pin")} ${escapeHtml(match.stadium)}${capacityHtml(match)}</span>
+              ${scoreHtml(match)}
+            </div>
+            <div class="tl-actions no-print">
+              ${ticketToggleHtml(match)}
+              ${match.clubWebsite ? websiteLinkHtml(match, "link-btn") : ""}
+            </div>
+          </div>
         </div>
       `;
 
@@ -2601,7 +2685,7 @@ async function renderDayTiles(plan, trip) {
       if (overnightLoc.lat !== lastMatch.lat || overnightLoc.lng !== lastMatch.lng) {
         const evening = await getCachedRoute(lastMatch.lat, lastMatch.lng, overnightLoc.lat, overnightLoc.lng);
         if (myRun !== renderRunId) return;
-        if (evening.geometry) L.geoJSON(evening.geometry, { style: { color: '#1b4332', weight: 4 } }).addTo(routeLayer);
+        if (evening.geometry) L.geoJSON(evening.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
       }
 
       // Freie Tage zwischen den Spielen: Anreise auf Fahrtage mit Zwischenstopps verteilen
@@ -2617,9 +2701,9 @@ async function renderDayTiles(plan, trip) {
 
       let warningHtml = "";
       if (!opPlan.feasible) {
-        warningHtml = `<div class="danger-banner">🚫 Zeitlich eng: Auch mit bis zu ${cfg().maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${opPlan.missingMin} Minuten, um pünktlich zum nächsten Spiel zu kommen. Ggf. eines der beiden Spiele entfernen.</div>`;
+        warningHtml = bannerHtml("danger", `Zeitlich zu eng: Auch mit bis zu ${cfg().maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${opPlan.missingMin} Minuten bis zum nächsten Spiel. Ggf. eines der beiden Spiele entfernen.`);
       } else if (opPlan.extraMinutesUsed > 0) {
-        warningHtml = `<div class="warning-banner">⚠️ Enges Zeitfenster: benötigt ca. ${opPlan.extraMinutesUsed} Min. mehr Nachtfahrt als in den Einstellungen als Standard hinterlegt.</div>`;
+        warningHtml = bannerHtml("warning", `Enges Zeitfenster: benötigt ca. ${opPlan.extraMinutesUsed} Min. mehr Nachtfahrt als eingestellt.`);
       }
 
       const legDeeplink1 = generateGoogleDeeplink(lastMatch.lat, lastMatch.lng, overnightLoc.lat, overnightLoc.lng);
@@ -2636,26 +2720,21 @@ async function renderDayTiles(plan, trip) {
           ? `Eigene Übernachtungsadresse – Weiterfahrt am nächsten Morgen ab ${cfg().nextDayStartHour} Uhr.`
           : `Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${cfg().nextDayStartHour} Uhr.`;
 
-      tileBody += `
-        <div class="timeline-item overnight-block">
-          <h4>🌙 Übernachtung erforderlich</h4>
-          <p class="print-only"><strong>Adresse:</strong> ${escapeHtml(overnightLoc.name)}</p>
-          ${warningHtml}
-          <p>${nightText}</p>
-          ${override ? '' : `<p><em>Automatischer Vorschlag – bitte Verfügbarkeit von Hotels/Unterkünften vor Ort kurz prüfen.</em></p>`}
-          <div class="form-row">
-            <input type="text" id="${inputId}" placeholder="Übernachtungsadresse" value="${escapeHtml(overnightLoc.name)}" />
-            <button class="btn btn-small" onclick="saveOvernightOverride('${lastMatch.id}', '${inputId}')">Übernehmen</button>
-            ${override ? `<button class="btn btn-small btn-secondary" onclick="clearOvernightOverride('${lastMatch.id}')">Vorschlag zurücksetzen</button>` : ''}
-          </div>
-          <a href="${legDeeplink1}" target="_blank" class="deeplink-btn">🗺️ Zur Übernachtung</a>
-          <a href="${hotelLink}" target="_blank" class="deeplink-btn hotel-btn">🏨 Unterkünfte hier suchen</a>
-          <a href="${legDeeplink2}" target="_blank" class="deeplink-btn">🗺️ ${drivingDays.length ? "Weiter zum ersten Stopp" : "Weiter zum nächsten Stadion"}</a>
-        </div>
-      `;
+      tileBody += overnightItemHtml({
+        title: "Übernachtung",
+        name: overnightLoc.name,
+        warning: warningHtml,
+        body: `<p class="muted">${nightText}${override ? "" : " Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen."}</p>`,
+        inputId, key: lastMatch.id, override: !!override,
+        links: [
+          { href: legDeeplink1, icon: "navigation", text: "Zur Übernachtung" },
+          { href: hotelLink, icon: "hotel", text: "Unterkünfte suchen" },
+          { href: legDeeplink2, icon: "navigation", text: drivingDays.length ? "Weiter zum ersten Stopp" : "Weiter zum nächsten Stadion" }
+        ]
+      });
 
-      L.marker([overnightLoc.lat, overnightLoc.lng])
-        .bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(overnightLoc.name)}`)
+      L.marker([overnightLoc.lat, overnightLoc.lng], { icon: pinIcon("night") })
+        .bindPopup(`<b>Übernachtung</b><br>${escapeHtml(overnightLoc.name)}`)
         .addTo(routeLayer);
 
       currentLoc = drivingDays.length
@@ -2677,9 +2756,9 @@ async function renderDayTiles(plan, trip) {
 
   if (myRun !== renderRunId) return;
   const routingWarning = routingEstimated
-    ? '<div class="warning-banner">⚠️ Der Routing-Dienst war nicht erreichbar oder lieferte keine Route – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.</div>'
+    ? bannerHtml("warning", "Der Routing-Dienst war nicht erreichbar – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.")
     : '';
-  timelineEl.innerHTML = routingWarning + (html || '<p class="placeholder-text">Kein Spiel konnte zeitlich eingeplant werden.</p>');
+  timelineEl.innerHTML = routingWarning + (html || `<div class="empty-state">${icon("calendar", "tone-amber")}<p>Kein Spiel konnte zeitlich eingeplant werden.</p></div>`);
 
   // Spiele ohne Tickets sind nicht Teil der Berechnung; sie werden separat aufgeführt.
   const visibleDropped = allDropped.filter(dd => !hasNoTickets(dd.match));
@@ -2693,14 +2772,14 @@ async function renderDayTiles(plan, trip) {
   if (visibleDropped.length > 0) {
     droppedHtml += `
       <div class="dropped-section">
-        <h3>Aussortierte Spiele (${visibleDropped.length})</h3>
+        <h3>${icon("circle-x", "tone-slate")} Aussortierte Spiele (${visibleDropped.length})</h3>
         ${visibleDropped.map(dd => droppedLine(dd.match, `<span class="reason">Grund: ${escapeHtml(dd.reason)}</span>`)).join('')}
       </div>`;
   }
   if (noTickets.length > 0) {
     droppedHtml += `
       <div class="dropped-section no-tickets-section">
-        <h3>🚫 Keine Tickets bekommen (${noTickets.length})</h3>
+        <h3>${icon("ticket-x", "tone-red")} Keine Tickets bekommen (${noTickets.length})</h3>
         ${noTickets.map(m => droppedLine(m, `<div class="no-print">${ticketToggleHtml(m)}</div>`)).join('')}
       </div>`;
   }
@@ -2862,7 +2941,7 @@ function updateMapMarkers() {
   markersLayer.clearLayers();
 
   if (trip.startAddress) {
-    L.marker([trip.startAddress.lat, trip.startAddress.lng])
+    L.marker([trip.startAddress.lat, trip.startAddress.lng], { icon: pinIcon("home"), zIndexOffset: 500 })
       .bindPopup(`<b>Startpunkt:</b> ${escapeHtml(trip.startAddress.address)}`)
       .addTo(markersLayer);
   }

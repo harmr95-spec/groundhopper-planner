@@ -3,34 +3,40 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Groundhopping Trip Planner</title>
+  <meta name="color-scheme" content="light dark">
+  <title>Groundhopper Planner</title>
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261114-11" />
+  <link rel="stylesheet" href="./style.css?v=20261114-12" />
+  <script src="./icons.js?v=20261114-12"></script>
 </head>
 <body>
 
   <header class="app-header">
-    <h1>⚽ Groundhopping Trip Planner</h1>
+    <a class="brand" href="./" aria-label="Groundhopper Planner – Startseite">
+      <img src="./assets/logo.svg" alt="" class="brand-logo" />
+      <span class="brand-name">Groundhopper <strong>Planner</strong></span>
+    </a>
     <div class="header-controls">
       <!-- Alles zum Trip -->
       <div class="trip-group" role="group" aria-label="Trip">
         <select id="tripSelect" onchange="switchTrip()" aria-label="Trip auswählen"></select>
-        <button onclick="renameActiveTrip()" class="trip-btn" title="Trip umbenennen" aria-label="Trip umbenennen">✏️</button>
-        <button onclick="createNewTrip()" class="trip-btn" title="Neuen Trip anlegen" aria-label="Neuen Trip anlegen">➕</button>
-        <button onclick="toggleSettingsModal()" class="trip-btn" title="Einstellungen" aria-label="Einstellungen">⚙️</button>
-        <button onclick="deleteActiveTrip()" class="trip-btn trip-btn-danger" title="Trip löschen" aria-label="Trip löschen">🗑️</button>
+        <button onclick="renameActiveTrip()" class="trip-btn" title="Trip umbenennen" aria-label="Trip umbenennen"><svg class="icon " aria-hidden="true"><use href="#i-pencil"/></svg></button>
+        <button onclick="createNewTrip()" class="trip-btn" title="Neuen Trip anlegen" aria-label="Neuen Trip anlegen"><svg class="icon " aria-hidden="true"><use href="#i-plus"/></svg></button>
+        <button onclick="toggleSettingsModal()" class="trip-btn" title="Einstellungen" aria-label="Einstellungen"><svg class="icon " aria-hidden="true"><use href="#i-settings"/></svg></button>
+        <button onclick="deleteActiveTrip()" class="trip-btn trip-btn-danger" title="Trip löschen" aria-label="Trip löschen"><svg class="icon " aria-hidden="true"><use href="#i-trash-2"/></svg></button>
       </div>
       <!-- Weitere Funktionen -->
       <details class="menu header-menu">
-        <summary class="btn btn-header menu-trigger" title="Weitere Funktionen" aria-label="Weitere Funktionen">☰</summary>
+        <summary class="btn-header menu-trigger" title="Weitere Funktionen" aria-label="Weitere Funktionen"><svg class="icon " aria-hidden="true"><use href="#i-menu"/></svg></summary>
         <div class="menu-list menu-right">
-          <button type="button" onclick="closeMenus(); printActiveTrip()">🖨️ Drucken / PDF</button>
+          <button type="button" onclick="closeMenus(); printActiveTrip()"><svg class="icon tone-slate" aria-hidden="true"><use href="#i-printer"/></svg> Drucken / PDF</button>
           <hr>
-          <button type="button" onclick="closeMenus(); exportActiveTrip()">💾 Exportieren</button>
-          <button type="button" onclick="closeMenus(); triggerImportTrip()">📥 Importieren</button>
+          <button type="button" onclick="closeMenus(); exportActiveTrip()"><svg class="icon tone-blue" aria-hidden="true"><use href="#i-download"/></svg> Exportieren</button>
+          <button type="button" onclick="closeMenus(); triggerImportTrip()"><svg class="icon tone-green" aria-hidden="true"><use href="#i-upload"/></svg> Importieren</button>
         </div>
       </details>
-      <input type="file" id="importTripInput" accept=".json" onchange="importTrip(event)" style="display: none;" />
+      <input type="file" id="importTripInput" accept=".json" onchange="importTrip(event)" hidden />
     </div>
   </header>
 
@@ -39,145 +45,152 @@
 
       <!-- Startadresse -->
       <section class="card">
-        <h3>1. Startpunkt</h3>
-        <div class="form-group">
+        <h3 class="card-title"><span class="chip chip-green"><svg class="icon " aria-hidden="true"><use href="#i-house"/></svg></span> Startpunkt</h3>
+        <div class="input-row">
           <input type="text" id="startAddress" placeholder="z. B. Musterstraße 1, Köln" />
-          <button onclick="setStartAddress()" class="btn btn-small">Speichern</button>
+          <button onclick="setStartAddress()" class="btn btn-soft">Speichern</button>
         </div>
         <p id="startAddressStatus" class="status-text"></p>
       </section>
 
       <!-- Spiel anlegen -->
       <section class="card">
-        <h3>2. Spiel hinzufügen</h3>
-        <form id="matchForm" onsubmit="addMatch(event)">
-          
-          <!-- Heimteam -->
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="homeTeam">Heimteam *</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
-              <input type="text" id="homeTeam" placeholder="z. B. FC St. Pauli" required style="flex: 1;" />
-              <div id="homeCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-                <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: white;" />
-                <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('home')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
+        <h3 class="card-title"><span class="chip chip-blue"><svg class="icon " aria-hidden="true"><use href="#i-plus"/></svg></span> Spiel hinzufügen</h3>
+        <form id="matchForm" onsubmit="addMatch(event)" class="form">
+
+          <div class="field">
+            <label for="homeTeam">Heimteam</label>
+            <div class="team-row">
+              <input type="text" id="homeTeam" placeholder="z. B. FC St. Pauli" required />
+              <div id="homeCrestPreviewContainer" class="crest-preview" style="display: none;">
+                <img id="homeCrestPreviewImg" src="" alt="Wappen Heim" />
+                <button type="button" class="icon-btn" onclick="toggleManualLogoInput('home')" title="Wappen ändern / manuelle URL eingeben" aria-label="Wappen ändern"><svg class="icon " aria-hidden="true"><use href="#i-image"/></svg></button>
               </div>
             </div>
-            <div id="homeLogoGroup" style="margin-top: 0.25rem; display: none;">
+            <div id="homeLogoGroup" style="display: none;">
               <input type="url" id="homeLogo" placeholder="Wappen-URL Heim (optional)" />
             </div>
           </div>
 
-          <!-- Auswärtsteam -->
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="awayTeam">Auswärtsteam *</label>
-            <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
-              <input type="text" id="awayTeam" placeholder="z. B. Hamburger SV" required style="flex: 1;" />
-              <div id="awayCrestPreviewContainer" style="display: none; align-items: center; gap: 0.25rem;">
-                <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" style="height: 36px; width: 36px; object-fit: contain; border: 1px solid #ccc; border-radius: 4px; padding: 2px; background: white;" />
-                <button type="button" class="btn btn-small btn-secondary" onclick="toggleManualLogoInput('away')" title="Wappen ändern / manuelle URL eingeben">✏️</button>
+          <div class="field">
+            <label for="awayTeam">Auswärtsteam</label>
+            <div class="team-row">
+              <input type="text" id="awayTeam" placeholder="z. B. Hamburger SV" required />
+              <div id="awayCrestPreviewContainer" class="crest-preview" style="display: none;">
+                <img id="awayCrestPreviewImg" src="" alt="Wappen Auswärts" />
+                <button type="button" class="icon-btn" onclick="toggleManualLogoInput('away')" title="Wappen ändern / manuelle URL eingeben" aria-label="Wappen ändern"><svg class="icon " aria-hidden="true"><use href="#i-image"/></svg></button>
               </div>
             </div>
-            <div id="awayLogoGroup" style="margin-top: 0.25rem; display: none;">
+            <div id="awayLogoGroup" style="display: none;">
               <input type="url" id="awayLogo" placeholder="Wappen-URL Auswärts (optional)" />
             </div>
           </div>
-          
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="competitionType">Wettbewerb *</label>
-            <select id="competitionType" required style="width:100%;margin-top:.25rem;">
-              <option value="league" selected>Liga</option><option value="national_cup">Pokal national</option><option value="international_cup">Pokal international</option><option value="friendly">Freundschaftsspiel</option><option value="other">Sonstiges</option>
+
+          <div class="field">
+            <label for="competitionType">Wettbewerb</label>
+            <select id="competitionType" required>
+              <option value="league" selected>Liga</option>
+              <option value="national_cup">Pokal national</option>
+              <option value="international_cup">Pokal international</option>
+              <option value="friendly">Freundschaftsspiel</option>
+              <option value="other">Sonstiges</option>
             </select>
           </div>
-          <!-- Liga Level -->
-          <div id="leagueLevelGroup" class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="leagueLevel">Liga Level *</label>
-            <select id="leagueLevel" required style="width: 100%; margin-top: 0.25rem;">
-              <option value="">Liga Level wählen *</option>
-              <option value="1">Level 1 (z.B. Bundesliga)</option>
-              <option value="2">Level 2 (z.B. 2. Bundesliga)</option>
-              <option value="3">Level 3 (z.B. 3. Liga)</option>
-              <option value="4">Level 4 (z.B. Regionalliga)</option>
-              <option value="5">Level 5 (z.B. Oberliga)</option>
+
+          <div id="leagueLevelGroup" class="field">
+            <label for="leagueLevel">Liga-Level</label>
+            <select id="leagueLevel" required>
+              <option value="">Liga-Level wählen</option>
+              <option value="1">Level 1 (z. B. Bundesliga)</option>
+              <option value="2">Level 2 (z. B. 2. Bundesliga)</option>
+              <option value="3">Level 3 (z. B. 3. Liga)</option>
+              <option value="4">Level 4 (z. B. Regionalliga)</option>
+              <option value="5">Level 5 (z. B. Oberliga)</option>
               <option value="6">Level 6 oder niedriger</option>
             </select>
           </div>
 
-          <div id="cupStageGroup" class="form-group" style="display:none;margin-bottom:.75rem;">
-            <label for="cupStage">Pokalphase *</label>
-            <select id="cupStage" style="width:100%;margin-top:.25rem;"><option value="final">Finale</option><option value="semifinal">Halbfinale</option><option value="knockout" selected>KO-Runde</option><option value="group">Gruppenphase</option><option value="qualification">Qualifikation</option></select>
+          <div id="cupStageGroup" class="field" style="display: none;">
+            <label for="cupStage">Pokalphase</label>
+            <select id="cupStage">
+              <option value="final">Finale</option>
+              <option value="semifinal">Halbfinale</option>
+              <option value="knockout" selected>KO-Runde</option>
+              <option value="group">Gruppenphase</option>
+              <option value="qualification">Qualifikation</option>
+            </select>
           </div>
-          <!-- Datum & Uhrzeit -->
-          <div class="form-row" style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
-            <div style="flex: 1;">
-              <label for="matchDate">Datum *</label>
-              <input type="date" id="matchDate" required style="width: 100%; margin-top: 0.25rem;" />
+
+          <div class="field-pair">
+            <div class="field">
+              <label for="matchDate">Datum</label>
+              <input type="date" id="matchDate" required />
             </div>
-            <div style="flex: 1;">
-              <label for="matchTime">Anstoßzeit *</label>
-              <input type="time" id="matchTime" required style="width: 100%; margin-top: 0.25rem;" />
+            <div class="field">
+              <label for="matchTime">Anstoß</label>
+              <input type="time" id="matchTime" required />
             </div>
           </div>
 
-          <!-- Stadion / Adresse -->
-          <div class="form-group" style="margin-bottom: 0.75rem;">
-            <label for="stadiumAddress">Stadion / Adresse *</label>
-            <input type="text" id="stadiumAddress" placeholder="Stadion / Adresse *" required style="width: 100%; margin-top: 0.25rem;" />
-            <div id="venueInfo" class="venue-info" style="display:none;"></div>
+          <div class="field">
+            <label for="stadiumAddress">Stadion / Adresse</label>
+            <input type="text" id="stadiumAddress" placeholder="Wird beim Heimteam meist automatisch ergänzt" required />
+            <div id="venueInfo" class="venue-info" style="display: none;"></div>
           </div>
 
-          <!-- Weitere Optionen -->
-          <details class="advanced-settings" style="margin-bottom: 0.75rem;">
-            <summary>Weitere Optionen (optional)</summary>
-            <div class="form-row" style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
-              <input type="number" id="customArrivalBuffer" placeholder="Anreise (Min.)" min="0" style="flex: 1;" />
-              <input type="number" id="customDepartureBuffer" placeholder="Abreise (Min.)" min="0" style="flex: 1;" />
+          <label class="check-row highlight-check">
+            <input type="checkbox" id="mustAttend" />
+            <svg class="icon tone-amber" aria-hidden="true"><use href="#i-star"/></svg> <span>Highlightspiel – möglichst immer einplanen</span>
+          </label>
+
+          <details class="advanced-settings">
+            <summary>Eigene Puffer für dieses Spiel</summary>
+            <div class="field-pair">
+              <input type="number" id="customArrivalBuffer" placeholder="Ankunft vorher (Min.)" min="0" />
+              <input type="number" id="customDepartureBuffer" placeholder="Abreise danach (Min.)" min="0" />
             </div>
-            <label class="checkbox-row" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
-              <input type="checkbox" id="mustAttend" />
-              ⭐ Highlightspiel
-            </label>
           </details>
 
-          <button type="submit" class="btn btn-primary" style="width: 100%;">Spiel hinzufügen</button>
+          <button type="submit" class="btn btn-primary btn-block">Spiel hinzufügen</button>
         </form>
       </section>
 
       <!-- Eingetragene Spiele -->
       <section class="card">
-        <h3>Erfasste Spiele (<span id="matchCount">0</span>)</h3>
+        <h3 class="card-title"><span class="chip chip-amber"><svg class="icon " aria-hidden="true"><use href="#i-list-checks"/></svg></span> Erfasste Spiele <span class="count-pill" id="matchCount">0</span></h3>
         <ul id="matchList" class="match-list"></ul>
       </section>
 
     </aside>
 
     <section class="content-area">
-      
-      <div class="map-controls" style="margin-bottom: 0.5rem;">
-        <label style="cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 0.5rem;">
+
+      <div class="card map-card">
+        <div id="map" class="map-container"></div>
+        <label class="map-filter">
           <input type="checkbox" id="showOnlySelectedToggle" onchange="updateMapMarkers()" />
-          <strong>Nur berechnete/eingeplante Spiele auf der Karte anzeigen</strong>
+          Nur eingeplante Spiele zeigen
         </label>
       </div>
-      
-      <!-- Karte -->
-      <div id="map" class="map-container"></div>
 
       <!-- Berechnete Route & Timeline -->
       <div class="card timeline-card">
         <div class="timeline-header">
-          <h2>Optimierter Ablaufplan</h2>
+          <h2 class="card-title card-title-lg"><span class="chip chip-green"><svg class="icon " aria-hidden="true"><use href="#i-route"/></svg></span> Ablaufplan</h2>
           <div class="route-calculation-controls">
-            <label for="optimizationMode">Berechnungsmethode</label>
-            <select id="optimizationMode"><option value="most_games" selected>Meiste Spiele</option><option value="groundhopper_score">Groundhopper Score</option><option value="balanced">Ausgewogen</option></select>
-            <button id="calculateRouteButton" onclick="calculateRoute()" class="btn btn-success">Route berechnen</button>
+            <select id="optimizationMode" aria-label="Berechnungsmethode" title="Berechnungsmethode">
+              <option value="most_games" selected>Meiste Spiele</option>
+              <option value="groundhopper_score">Groundhopper Score</option>
+              <option value="balanced">Ausgewogen</option>
+            </select>
+            <button id="calculateRouteButton" onclick="calculateRoute()" class="btn btn-primary"><svg class="icon " aria-hidden="true"><use href="#i-calculator"/></svg> <span class="btn-text">Route berechnen</span></button>
           </div>
         </div>
 
-        <!-- CONTAINER FÜR TRIP-ALTERNATIVEN & STATISTIKEN -->
         <div id="planSwitcher" class="plan-switcher-wrap"></div>
 
         <div id="timeline" class="timeline-container">
-          <p class="placeholder-text">Füge Spiele hinzu und klicke auf "Route berechnen".</p>
+          <div class="empty-state"><svg class="icon tone-green" aria-hidden="true"><use href="#i-map"/></svg><p>Füge Spiele hinzu und klicke auf „Route berechnen“.</p></div>
         </div>
         <div id="droppedSection"></div>
       </div>
@@ -192,11 +205,11 @@
           <h2 id="settingsTitle">Einstellungen</h2>
           <p class="settings-hint">Gelten nur für den ausgewählten Trip. Neue Trips starten mit diesen Werten.</p>
         </div>
-        <button type="button" class="modal-close" onclick="toggleSettingsModal()" aria-label="Schließen">✕</button>
+        <button type="button" class="modal-close" onclick="toggleSettingsModal()" aria-label="Schließen"><svg class="icon " aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
 
       <div class="modal-body">
-        <h3 class="settings-section">⚽ Rund ums Spiel</h3>
+        <h3 class="settings-section"><span class="chip chip-green"><svg class="icon " aria-hidden="true"><use href="#i-goal"/></svg></span> Rund ums Spiel</h3>
         <div class="settings-grid">
           <label class="setting-field" for="settingArrivalBuffer">
             <span>Ankunft vor Anstoß</span>
@@ -216,7 +229,7 @@
           </label>
         </div>
 
-        <h3 class="settings-section">🚗 Fahren &amp; Übernachten</h3>
+        <h3 class="settings-section"><span class="chip chip-sky"><svg class="icon " aria-hidden="true"><use href="#i-car"/></svg></span> Fahren &amp; Übernachten</h3>
         <div class="settings-grid">
           <label class="setting-field" for="settingMaxNightDrive">
             <span>Späteste Fahrzeit (abends)</span>
@@ -232,7 +245,7 @@
           </label>
         </div>
 
-        <h3 class="settings-section">🏆 Groundhopper Score</h3>
+        <h3 class="settings-section"><span class="chip chip-amber"><svg class="icon " aria-hidden="true"><use href="#i-trophy"/></svg></span> Groundhopper Score</h3>
         <p class="settings-hint">Gewichtung der Kriterien – wird automatisch auf 100 % umgerechnet.</p>
         <div class="settings-grid">
           <label class="setting-field" for="weightHighlight">
@@ -255,14 +268,14 @@
       </div>
 
       <div class="modal-actions">
-        <button onclick="toggleSettingsModal()" class="btn btn-secondary">Abbrechen</button>
+        <button onclick="toggleSettingsModal()" class="btn btn-ghost">Abbrechen</button>
         <button onclick="saveSettings()" class="btn btn-primary">Speichern</button>
       </div>
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261114-11"></script>
-  <script src="./features.js?v=20261114-11"></script>
+  <script src="./app.js?v=20261114-12"></script>
+  <script src="./features.js?v=20261114-12"></script>
 </body>
 </html>
