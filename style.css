@@ -266,3 +266,15 @@ input, select, button { padding: 0.6rem; border: 1px solid var(--border-color); 
   #tripSelect { min-width: 0; flex: 1; }
   .header-controls { width: 100%; }
 }
+
+/* ---------- Trip-Gruppe im Header ---------- */
+.trip-group { display: inline-flex; align-items: stretch; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.trip-group #tripSelect { border: none; border-radius: 0; min-width: 200px; max-width: 280px; }
+.trip-group .trip-btn { border: none; border-left: 1px solid var(--border-color); border-radius: 0; background: #fff; cursor: pointer; padding: 0.5rem 0.65rem; font-size: 0.95rem; }
+.trip-group .trip-btn:hover { background: #eef5f1; }
+.trip-group .trip-btn-danger:hover { background: var(--danger-bg); }
+@media (max-width: 600px) {
+  .trip-group { flex: 1; min-width: 0; }
+  .trip-group #tripSelect { min-width: 0; flex: 1; }
+  .trip-group .trip-btn { padding: 0.5rem; }
+}

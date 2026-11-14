@@ -5,26 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Groundhopping Trip Planner</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261114-7" />
+  <link rel="stylesheet" href="./style.css?v=20261114-8" />
 </head>
 <body>
 
   <header class="app-header">
     <h1>⚽ Groundhopping Trip Planner</h1>
     <div class="header-controls">
-      <select id="tripSelect" onchange="switchTrip()" aria-label="Trip auswählen"></select>
-      <button id="printTripButton" onclick="printActiveTrip()" class="btn btn-header" title="Aktuellen Trip drucken oder als PDF speichern">🖨️ <span class="btn-label">Drucken</span></button>
-      <button onclick="toggleSettingsModal()" class="btn btn-header" title="Einstellungen">⚙️ <span class="btn-label">Einstellungen</span></button>
+      <!-- Alles zum Trip -->
+      <div class="trip-group" role="group" aria-label="Trip">
+        <select id="tripSelect" onchange="switchTrip()" aria-label="Trip auswählen"></select>
+        <button onclick="renameActiveTrip()" class="trip-btn" title="Trip umbenennen" aria-label="Trip umbenennen">✏️</button>
+        <button onclick="createNewTrip()" class="trip-btn" title="Neuen Trip anlegen" aria-label="Neuen Trip anlegen">➕</button>
+        <button onclick="toggleSettingsModal()" class="trip-btn" title="Einstellungen" aria-label="Einstellungen">⚙️</button>
+        <button onclick="deleteActiveTrip()" class="trip-btn trip-btn-danger" title="Trip löschen" aria-label="Trip löschen">🗑️</button>
+      </div>
+      <!-- Weitere Funktionen -->
       <details class="menu header-menu">
-        <summary class="btn btn-header menu-trigger" title="Trip-Aktionen" aria-label="Trip-Aktionen">☰</summary>
+        <summary class="btn btn-header menu-trigger" title="Weitere Funktionen" aria-label="Weitere Funktionen">☰</summary>
         <div class="menu-list menu-right">
-          <button type="button" onclick="closeMenus(); createNewTrip()">➕ Neuer Trip</button>
-          <button type="button" onclick="closeMenus(); renameActiveTrip()">✏️ Trip umbenennen</button>
+          <button type="button" onclick="closeMenus(); printActiveTrip()">🖨️ Drucken / PDF</button>
           <hr>
           <button type="button" onclick="closeMenus(); exportActiveTrip()">💾 Exportieren</button>
           <button type="button" onclick="closeMenus(); triggerImportTrip()">📥 Importieren</button>
-          <hr>
-          <button type="button" class="menu-danger" onclick="closeMenus(); deleteActiveTrip()">🗑️ Trip löschen</button>
         </div>
       </details>
       <input type="file" id="importTripInput" accept=".json" onchange="importTrip(event)" style="display: none;" />
@@ -223,7 +226,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261114-7"></script>
-  <script src="./features.js?v=20261114-7"></script>
+  <script src="./app.js?v=20261114-8"></script>
+  <script src="./features.js?v=20261114-8"></script>
 </body>
 </html>
