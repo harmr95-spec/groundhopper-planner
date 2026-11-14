@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Groundhopping Trip Planner</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261114-8" />
+  <link rel="stylesheet" href="./style.css?v=20261114-9" />
 </head>
 <body>
 
@@ -187,7 +187,8 @@
   <!-- Einstellungen Modal -->
   <div id="settingsModal" class="modal">
     <div class="modal-content">
-      <h2>Globale Einstellungen</h2>
+      <h2>Einstellungen für diesen Trip</h2>
+      <p class="settings-hint">Gelten nur für den aktuell ausgewählten Trip. Neue Trips starten mit diesen Werten.</p>
       <div class="form-group">
         <label for="settingArrivalBuffer">Anreise-Puffer vor Anstoß (Minuten):</label>
         <input type="number" id="settingArrivalBuffer" value="30" min="0" />
@@ -226,7 +227,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261114-8"></script>
-  <script src="./features.js?v=20261114-8"></script>
+  <script src="./app.js?v=20261114-9"></script>
+  <script src="./features.js?v=20261114-9"></script>
 </body>
 </html>

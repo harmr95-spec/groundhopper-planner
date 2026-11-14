@@ -1,17 +1,35 @@
+// Standardwerte für die Einstellungen eines neuen Trips
+const DEFAULT_SETTINGS = {
+  arrivalBufferMin: 30,
+  departureBufferMin: 30,
+  halfTimeMin: 15,
+  stoppageTimeMin: 10,
+  maxNightDriveTime: "22:00",
+  nextDayStartHour: "08:00",
+  maxExtraNightDriveMin: 120,
+  groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
+};
+
 let state = {
   activeTripId: null,
-  settings: {
-    arrivalBufferMin: 30,
-    departureBufferMin: 30,
-    halfTimeMin: 15,
-    stoppageTimeMin: 10,
-    maxNightDriveTime: "22:00",
-    nextDayStartHour: "08:00",
-    maxExtraNightDriveMin: 120,
-    groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
-  },
-  trips: []
+  trips: []   // jeder Trip hat seine eigenen Einstellungen (trip.settings)
 };
+
+// Vollständige Einstellungen aus (evtl. unvollständigen) Werten bilden
+function completeSettings(raw) {
+  const base = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const out = { ...base, ...(raw || {}) };
+  out.groundhopperWeights = { ...base.groundhopperWeights, ...((raw && raw.groundhopperWeights) || {}) };
+  return out;
+}
+
+// Einstellungen des aktiven Trips (lesen und schreiben)
+function cfg() {
+  const trip = getActiveTrip();
+  if (!trip) return DEFAULT_SETTINGS;
+  if (!trip.settings) trip.settings = completeSettings();
+  return trip.settings;
+}
 
 let map, markersLayer, routeLayer;
 let travelCache = new Map();
@@ -110,7 +128,12 @@ function loadLocalStorage() {
     if (!parsed || !Array.isArray(parsed.trips) || parsed.trips.some(t => !t || !Array.isArray(t.matches))) {
       throw new Error("Unerwartetes Datenformat");
     }
-    state = { ...state, ...parsed, settings: { ...state.settings, ...parsed.settings } };
+    // Früher globale Einstellungen: jeder Trip ohne eigene Einstellungen übernimmt sie einmalig.
+    const legacy = parsed.settings;
+    delete parsed.settings;
+    state = { ...state, ...parsed };
+    state.trips.forEach(trip => { trip.settings = completeSettings(trip.settings || legacy); });
+    if (legacy) saveLocalStorage(); // Umstellung sofort im neuen Format speichern
     // Gespeicherte Pläne referenzieren Spiele nur per ID: wieder mit den Spielobjekten des Trips verknüpfen.
     state.trips.forEach(trip => {
       if (!Array.isArray(trip.plans)) return;
@@ -172,12 +195,15 @@ function createNewTrip(defaultName = null) {
   const name = defaultName || prompt("Name des neuen Trips:", "Neuer Trip");
   if (!name) return;
 
+  const active = getActiveTrip();
   const newTrip = {
     id: "trip_" + Date.now(),
     name: name,
     startAddress: null,
     matches: [],
     overnightOverrides: {},
+    // Neuer Trip startet mit den Einstellungen des gerade aktiven Trips
+    settings: completeSettings(active && active.settings),
     plans: null
   };
 
@@ -577,7 +603,7 @@ function cupStageLabel(stage) {
 const DEFAULT_WEIGHTS = { highlight: 40, stage: 30, competition: 20, stadium: 10 };
 
 function normalizedWeights() {
-  const raw = state.settings.groundhopperWeights || DEFAULT_WEIGHTS;
+  const raw = cfg().groundhopperWeights || DEFAULT_WEIGHTS;
   const values = {};
   for (const key of Object.keys(DEFAULT_WEIGHTS)) values[key] = Math.max(0, +raw[key] || 0);
   const sum = Object.values(values).reduce((a, b) => a + b, 0);
@@ -986,7 +1012,7 @@ function rebindImportedPlan(raw, byOldId, availableCount, mustTotal) {
   };
 }
 
-function normalizeImportedTrip(rawTrip, fallbackPlans) {
+function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
   if (!rawTrip || typeof rawTrip !== "object" || !Array.isArray(rawTrip.matches)) return null;
   const name = toText(rawTrip.name, 120).trim();
   if (!name) return null;
@@ -1026,6 +1052,7 @@ function normalizeImportedTrip(rawTrip, fallbackPlans) {
 
   const trip = {
     id: "trip_" + Date.now(), name, startAddress, matches, overnightOverrides,
+    settings: completeSettings(sanitizeSettings(rawTrip.settings || fallbackSettings || cfg())),
     optimizationMode: OPT_MODES.includes(rawTrip.optimizationMode) ? rawTrip.optimizationMode : "most_games"
   };
   if (plans.length) {
@@ -1322,9 +1349,9 @@ function addDaysIso(dateStr, delta) {
 // der Rest gleichmäßig auf die letzten freien Tage davor. Gesetzte Stopps (Overrides) ersetzen den Vorschlag,
 // die Tage danach rechnen ab dort weiter.
 async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
-  const arrBuffer = nextMatch.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+  const arrBuffer = nextMatch.customArrivalBuffer ?? cfg().arrivalBufferMin;
   const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
-  const morningStart = timeToDateOnDay(nextMatch.date, state.settings.nextDayStartHour);
+  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour);
   const lastDayMin = Math.max(0, (requiredArrival - morningStart) / 60000);
 
   const days = [];
@@ -1375,7 +1402,7 @@ async function renderJourneyTiles(days, myRun) {
     L.marker([day.to.lat, day.to.lng]).bindPopup(`<b>🌙 Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
 
     const driveMin = leg.durationMin;
-    const dep = timeToDateOnDay(day.date, state.settings.nextDayStartHour);
+    const dep = timeToDateOnDay(day.date, cfg().nextDayStartHour);
     const arr = new Date(dep.getTime() + driveMin * 60000);
     const inputId = `driveStopInput_${day.key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const longWarning = driveMin > DAILY_DRIVE_MIN
@@ -1447,8 +1474,8 @@ function generateHotelSearchLink(lat, lng) {
 
 function calculateMatchEndTime(match) {
   const kickOff = new Date(`${match.date}T${match.time}`);
-  const depBuffer = match.customDepartureBuffer ?? state.settings.departureBufferMin;
-  const totalDurationMin = 90 + state.settings.halfTimeMin + state.settings.stoppageTimeMin + depBuffer;
+  const depBuffer = match.customDepartureBuffer ?? cfg().departureBufferMin;
+  const totalDurationMin = 90 + cfg().halfTimeMin + cfg().stoppageTimeMin + depBuffer;
   return new Date(kickOff.getTime() + totalDurationMin * 60000);
 }
 
@@ -1479,7 +1506,7 @@ async function computeDayDP(segment, startLoc, startTime) {
 
   for (let j = 0; j < n; j++) {
     const m = segment[j];
-    const arrBuffer = m.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+    const arrBuffer = m.customArrivalBuffer ?? cfg().arrivalBufferMin;
     const kickoff = new Date(`${m.date}T${m.time}`);
     const requiredArrival = new Date(kickoff.getTime() - arrBuffer * 60000);
 
@@ -1610,10 +1637,10 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
 // Reine Machbarkeitsprüfung der Übernachtung zwischen zwei Spielen (ohne Netzwerkzugriff).
 function overnightFeasibility(prevMatch, nextMatch, totalTravelMin, fromOvernight = false) {
   const prevEnd = calculateMatchEndTime(prevMatch);
-  const arrBuffer = nextMatch.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+  const arrBuffer = nextMatch.customArrivalBuffer ?? cfg().arrivalBufferMin;
   const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
-  const nightCutoff = timeToDateOnDay(prevMatch.date, state.settings.maxNightDriveTime);
-  const morningStart = timeToDateOnDay(nextMatch.date, state.settings.nextDayStartHour);
+  const nightCutoff = timeToDateOnDay(prevMatch.date, cfg().maxNightDriveTime);
+  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour);
   const gapDays = Math.max(0, Math.round(
     (new Date(`${nextMatch.date}T00:00:00`) - new Date(`${prevMatch.date}T00:00:00`)) / 86400000));
    const freeDayMin = Math.max(0, gapDays - 1) * DAILY_DRIVE_MIN; // pro freiem Tag konservativ 12 h Fahrzeit
@@ -1632,7 +1659,7 @@ function overnightFeasibility(prevMatch, nextMatch, totalTravelMin, fromOvernigh
   let result = compute(nightCutoff);
   let extraMinutesUsed = 0;
   if (!result.feasible && !fromOvernight) {
-    const maxExtra = state.settings.maxExtraNightDriveMin ?? 120;
+    const maxExtra = cfg().maxExtraNightDriveMin ?? 120;
     for (let extra = 15; extra <= maxExtra; extra += 15) {
       result = compute(new Date(nightCutoff.getTime() + extra * 60000));
       extraMinutesUsed = extra;
@@ -1666,7 +1693,7 @@ const ARRIVAL_STOP_PREFIX = "__start@";
 const arrivalDayKey = matchDate => `${ARRIVAL_STOP_PREFIX}${addDaysIso(matchDate, -1)}`;
 
 function morningWindowMin(m) {
-  return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, state.settings.nextDayStartHour)) / 60000);
+  return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, cfg().nextDayStartHour)) / 60000);
 }
 
 // Machbar mit Anreisetag? Am Vortag bis zu DAILY_DRIVE_MIN fahren, Rest am Spieltag morgens.
@@ -1945,7 +1972,7 @@ function initialPlanState(trip, firstDate) {
     dayChains: [],
     currentLoc: { lat: trip.startAddress.lat, lng: trip.startAddress.lng },
     // Abfahrt von zu Hause frühestens zur eingestellten Morgen-Startzeit des ersten Spieltags
-    currentTime: timeToDateOnDay(firstDate, state.settings.nextDayStartHour),
+    currentTime: timeToDateOnDay(firstDate, cfg().nextDayStartHour),
     totalTravelMin: 0,
     tightNights: 0,
     infeasibleNights: 0,
@@ -1965,7 +1992,7 @@ function overnightOrigin(trip, lastOfDay) {
 }
 
 function requiredArrivalTime(match) {
-  const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+  const arrBuffer = match.customArrivalBuffer ?? cfg().arrivalBufferMin;
   return new Date(new Date(`${match.date}T${match.time}`).getTime() - arrBuffer * 60000);
 }
 
@@ -1997,7 +2024,7 @@ async function appendDay(planState, trip, date, chain, dropped, nextDate) {
   return {
     dayChains: [...planState.dayChains, { date, chain, dropped, overnightAfter: overnight }],
     currentLoc: nextLoc,
-    currentTime: nextDate ? timeToDateOnDay(nextDate, state.settings.nextDayStartHour) : planState.currentTime,
+    currentTime: nextDate ? timeToDateOnDay(nextDate, cfg().nextDayStartHour) : planState.currentTime,
     totalTravelMin: planState.totalTravelMin + dayTravelMin,
     tightNights: planState.tightNights + tightAdd,
     infeasibleNights: planState.infeasibleNights + infeasibleAdd,
@@ -2115,7 +2142,7 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
     const pos = dc.chain.findIndex(m => m.id === removed.id);
     const prev = dc.chain[pos - 1] || null;
     const next = dc.chain[pos + 1] || null;
-    const morning = timeToDateOnDay(dc.date, state.settings.nextDayStartHour);
+    const morning = timeToDateOnDay(dc.date, cfg().nextDayStartHour);
 
     // Ausgangspunkt der Lücke: vorheriges Spiel desselben Tages, sonst Übernachtung des Vortags, sonst Start
     let startLoc, startTime;
@@ -2334,7 +2361,7 @@ async function calculateRoute() {
 
     // Alternativen auch im Trip-Objekt ablegen (inkl. Stand der Einstellungen für den Veraltet-Hinweis)
     trip.plans = currentPlans;
-    trip.plansSettingsKey = JSON.stringify(state.settings);
+    trip.plansSettingsKey = JSON.stringify(cfg());
 
     let idx = 0;
     if (trip.selectedPlanSignature) {
@@ -2388,7 +2415,7 @@ function renderPlanSwitcher(plan) {
   if (!el) return;
 
   const trip = getActiveTrip();
-  const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== JSON.stringify(state.settings)
+  const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== JSON.stringify(cfg())
     ? '<div class="warning-banner">⚠️ Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen" erneut ausführen.</div>'
     : '';
 
@@ -2524,7 +2551,7 @@ async function renderDayTiles(plan, trip) {
       }
 
       const kickOff = new Date(`${match.date}T${match.time}`);
-      const arrBuffer = match.customArrivalBuffer ?? state.settings.arrivalBufferMin;
+      const arrBuffer = match.customArrivalBuffer ?? cfg().arrivalBufferMin;
       const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
       const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
       const depPrefix = departureTime.toDateString() !== kickOff.toDateString()
@@ -2590,7 +2617,7 @@ async function renderDayTiles(plan, trip) {
 
       let warningHtml = "";
       if (!opPlan.feasible) {
-        warningHtml = `<div class="danger-banner">🚫 Zeitlich eng: Auch mit bis zu ${state.settings.maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${opPlan.missingMin} Minuten, um pünktlich zum nächsten Spiel zu kommen. Ggf. eines der beiden Spiele entfernen.</div>`;
+        warningHtml = `<div class="danger-banner">🚫 Zeitlich eng: Auch mit bis zu ${cfg().maxExtraNightDriveMin} Min. zusätzlicher Nachtfahrt fehlen ca. ${opPlan.missingMin} Minuten, um pünktlich zum nächsten Spiel zu kommen. Ggf. eines der beiden Spiele entfernen.</div>`;
       } else if (opPlan.extraMinutesUsed > 0) {
         warningHtml = `<div class="warning-banner">⚠️ Enges Zeitfenster: benötigt ca. ${opPlan.extraMinutesUsed} Min. mehr Nachtfahrt als in den Einstellungen als Standard hinterlegt.</div>`;
       }
@@ -2606,8 +2633,8 @@ async function renderDayTiles(plan, trip) {
             ? `die Anreise ist auf ${drivingDays.length} Fahrtag${drivingDays.length === 1 ? "" : "e"} verteilt (siehe unten).`
             : "die Anreise ist ohne Nachtfahrt möglich."}`
         : override
-          ? `Eigene Übernachtungsadresse – Weiterfahrt am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.`
-          : `Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${state.settings.nextDayStartHour} Uhr.`;
+          ? `Eigene Übernachtungsadresse – Weiterfahrt am nächsten Morgen ab ${cfg().nextDayStartHour} Uhr.`
+          : `Vorschlag: ca. ${opPlan.eveningDriveMin} Min. noch am Abend fahren, Rest am nächsten Morgen ab ${cfg().nextDayStartHour} Uhr.`;
 
       tileBody += `
         <div class="timeline-item overnight-block">
@@ -2687,14 +2714,14 @@ function toggleSettingsModal() {
     modal.style.display = "none";
     return;
   }
-  document.getElementById("settingArrivalBuffer").value = state.settings.arrivalBufferMin;
-  document.getElementById("settingDepartureBuffer").value = state.settings.departureBufferMin;
-  document.getElementById("settingHalfTime").value = state.settings.halfTimeMin;
-  document.getElementById("settingStoppageTime").value = state.settings.stoppageTimeMin;
-  document.getElementById("settingMaxNightDrive").value = state.settings.maxNightDriveTime;
-  document.getElementById("settingNextDayStart").value = state.settings.nextDayStartHour;
-  document.getElementById("settingMaxExtraNightDrive").value = state.settings.maxExtraNightDriveMin;
-  const weights = state.settings.groundhopperWeights || {highlight:40,stage:30,competition:20,stadium:10};
+  document.getElementById("settingArrivalBuffer").value = cfg().arrivalBufferMin;
+  document.getElementById("settingDepartureBuffer").value = cfg().departureBufferMin;
+  document.getElementById("settingHalfTime").value = cfg().halfTimeMin;
+  document.getElementById("settingStoppageTime").value = cfg().stoppageTimeMin;
+  document.getElementById("settingMaxNightDrive").value = cfg().maxNightDriveTime;
+  document.getElementById("settingNextDayStart").value = cfg().nextDayStartHour;
+  document.getElementById("settingMaxExtraNightDrive").value = cfg().maxExtraNightDriveMin;
+  const weights = cfg().groundhopperWeights || {highlight:40,stage:30,competition:20,stadium:10};
   document.getElementById("weightHighlight").value = weights.highlight;
   document.getElementById("weightStage").value = weights.stage;
   document.getElementById("weightCompetition").value = weights.competition;
@@ -2703,14 +2730,22 @@ function toggleSettingsModal() {
 }
 
 function saveSettings() {
-  state.settings.arrivalBufferMin = parseInt(document.getElementById("settingArrivalBuffer").value);
-  state.settings.departureBufferMin = parseInt(document.getElementById("settingDepartureBuffer").value);
-  state.settings.halfTimeMin = parseInt(document.getElementById("settingHalfTime").value);
-  state.settings.stoppageTimeMin = parseInt(document.getElementById("settingStoppageTime").value);
-  state.settings.maxNightDriveTime = document.getElementById("settingMaxNightDrive").value;
-  state.settings.nextDayStartHour = document.getElementById("settingNextDayStart").value;
-  state.settings.maxExtraNightDriveMin = parseInt(document.getElementById("settingMaxExtraNightDrive").value);
-  state.settings.groundhopperWeights = {highlight:parseFloat(document.getElementById("weightHighlight").value)||0,stage:parseFloat(document.getElementById("weightStage").value)||0,competition:parseFloat(document.getElementById("weightCompetition").value)||0,stadium:parseFloat(document.getElementById("weightStadium").value)||0};
+  const settings = cfg(); // Einstellungen des aktiven Trips
+  const num = (id, fallback) => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) && v >= 0 ? v : fallback; };
+  const time = (id, fallback) => document.getElementById(id).value || fallback;
+  const weight = id => Math.max(0, parseFloat(document.getElementById(id).value) || 0);
+
+  settings.arrivalBufferMin = num("settingArrivalBuffer", settings.arrivalBufferMin);
+  settings.departureBufferMin = num("settingDepartureBuffer", settings.departureBufferMin);
+  settings.halfTimeMin = num("settingHalfTime", settings.halfTimeMin);
+  settings.stoppageTimeMin = num("settingStoppageTime", settings.stoppageTimeMin);
+  settings.maxNightDriveTime = time("settingMaxNightDrive", settings.maxNightDriveTime);
+  settings.nextDayStartHour = time("settingNextDayStart", settings.nextDayStartHour);
+  settings.maxExtraNightDriveMin = num("settingMaxExtraNightDrive", settings.maxExtraNightDriveMin);
+  settings.groundhopperWeights = {
+    highlight: weight("weightHighlight"), stage: weight("weightStage"),
+    competition: weight("weightCompetition"), stadium: weight("weightStadium")
+  };
 
   saveLocalStorage();
   if (currentPlans && currentPlans[currentPlanIndex]) renderPlanSwitcher(currentPlans[currentPlanIndex]);
@@ -2736,7 +2771,7 @@ function exportActiveTrip() {
     type: "groundhopping_trip",
     version: 1,
     exportedAt: new Date().toISOString(),
-    settings: state.settings,
+    settings: cfg(), // zusätzlich auf oberster Ebene für ältere Versionen der App
     trip: serializeTrip(trip) // Pläne kompakt (Spiele als ID-Verweise); der Import versteht beide Formate
   };
 
@@ -2768,7 +2803,8 @@ function importTrip(event) {
       const importedData = JSON.parse(e.target.result);
       const result = normalizeImportedTrip(
         importedData && importedData.trip ? importedData.trip : importedData,
-        importedData && importedData.plans
+        importedData && importedData.plans,
+        importedData && importedData.settings
       );
       if (!result) {
         alert("Ungültiges Dateiformat oder keine gültigen Spiele. Bitte wähle eine gültige Groundhopping JSON-Datei.");
@@ -2780,9 +2816,6 @@ function importTrip(event) {
       state.trips.push(importedTrip);
       state.activeTripId = importedTrip.id;
 
-      if (importedData.settings && confirm("Möchtest du auch die Trip-Einstellungen (Pufferzeiten, Nachtfahrtsgrenzen) übernehmen?")) {
-        state.settings = { ...state.settings, ...sanitizeSettings(importedData.settings) };
-      }
 
       saveLocalStorage();
       renderTripSelect();
