@@ -7,7 +7,7 @@
   <title>Groundhopper Planner</title>
   <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261120-5" />
+  <link rel="stylesheet" href="./style.css?v=20261120-6" />
   <script src="./icons.js?v=20261114-14"></script>
 </head>
 <body>
@@ -30,6 +30,7 @@
       <details class="menu header-menu">
         <summary class="btn-header menu-trigger" title="Weitere Funktionen" aria-label="Weitere Funktionen"><svg class="icon " aria-hidden="true"><use href="#i-menu"/></svg></summary>
         <div class="menu-list menu-right">
+          <button type="button" onclick="closeMenus(); openBriefingManager()"><svg class="icon tone-violet" aria-hidden="true"><use href="#i-book-open"/></svg> Match One-Pager</button>
           <button type="button" onclick="closeMenus(); printActiveTrip()"><svg class="icon tone-slate" aria-hidden="true"><use href="#i-printer"/></svg> Drucken / PDF</button>
           <hr>
           <button type="button" onclick="closeMenus(); exportActiveTrip()"><svg class="icon tone-blue" aria-hidden="true"><use href="#i-download"/></svg> Exportieren</button>
@@ -56,7 +57,9 @@
       <!-- Spiel anlegen -->
       <section class="card">
         <h3 class="card-title"><span class="chip chip-blue"><svg class="icon " aria-hidden="true"><use href="#i-plus"/></svg></span> Spiel hinzufügen</h3>
-        <form id="matchForm" onsubmit="addMatch(event)" class="form">
+        <p class="frozen-hint"><svg class="icon" aria-hidden="true"><use href="#i-badge-check"/></svg> Trip ist bestätigt – zum Hinzufügen oder Ändern von Spielen erst die Bestätigung aufheben.</p>
+        <form id="matchForm" onsubmit="addMatch(event)">
+          <fieldset id="matchFormFields" class="form">
 
           <div class="field">
             <label for="homeTeam">Heimteam</label>
@@ -152,6 +155,7 @@
           </details>
 
           <button type="submit" class="btn btn-primary btn-block">Spiel hinzufügen</button>
+          </fieldset>
         </form>
       </section>
 
@@ -296,8 +300,8 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261114-14"></script>
-  <script src="./briefings.js?v=20261120-5"></script>
-  <script src="./features.js?v=20261114-14"></script>
+  <script src="./app.js?v=20261120-7"></script>
+  <script src="./briefings.js?v=20261120-6"></script>
+  <script src="./features.js?v=20261120-6"></script>
 </body>
 </html>

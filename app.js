@@ -258,11 +258,41 @@ function renderTripSelect() {
 }
 
 // ---------- Geocoding (Nominatim) ----------
-async function geocodeAddress(address) {
-  if (!address || !address.trim()) return null;
+// Nominatim erlaubt max. 1 Anfrage pro Sekunde: alle Anfragen laufen nacheinander mit Mindestabstand.
+const NOMINATIM_MIN_GAP_MS = 1100;
+let nominatimQueue = Promise.resolve();
+let nominatimLast = 0;
+function nominatimFetch(url) {
+  const run = nominatimQueue.then(async () => {
+    const wait = nominatimLast + NOMINATIM_MIN_GAP_MS - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    try {
+      return await fetchWithTimeout(url);
+    } finally {
+      nominatimLast = Date.now();
+    }
+  });
+  nominatimQueue = run.catch(() => {}); // Fehler einer Anfrage blockieren die Warteschlange nicht
+  return run;
+}
+const geocodeCache = new Map(); // gleiche Adresse nicht mehrfach abfragen
+
+const geocodePending = new Map(); // gleichzeitige Anfragen für dieselbe Adresse zusammenfassen
+
+function geocodeAddress(address) {
+  if (!address || !address.trim()) return Promise.resolve(null);
+  const cacheKey = address.trim().toLowerCase();
+  if (geocodeCache.has(cacheKey)) return Promise.resolve(geocodeCache.get(cacheKey));
+  if (!geocodePending.has(cacheKey)) {
+    geocodePending.set(cacheKey, geocodeAddressUncached(address, cacheKey).finally(() => geocodePending.delete(cacheKey)));
+  }
+  return geocodePending.get(cacheKey);
+}
+
+async function geocodeAddressUncached(address, cacheKey) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(address)}`;
   try {
-    const response = await fetchWithTimeout(url);
+    const response = await nominatimFetch(url);
     const data = await response.json();
     if (data && data.length > 0) {
       const r = data[0];
@@ -280,12 +310,14 @@ async function geocodeAddress(address) {
 
       const formattedAddress = [streetStr, cityStr, country].filter(Boolean).join(", ");
 
-      return {
+      const result = {
         lat: parseFloat(r.lat),
         lng: parseFloat(r.lon),
         display: formattedAddress || r.display_name,
         countryCode: addr.country_code || null
       };
+      geocodeCache.set(cacheKey, result);
+      return result;
     }
   } catch (err) {
     console.error("Geocoding Error:", err);
@@ -296,7 +328,7 @@ async function geocodeAddress(address) {
 async function reverseGeocode(lat, lng, zoom = 10) {
   const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=${zoom}`;
   try {
-    const res = await fetchWithTimeout(url);
+    const res = await nominatimFetch(url);
     const data = await res.json();
     const addr = data.address || {};
     return addr.city || addr.town || addr.village || addr.municipality || addr.county || data.display_name || null;
@@ -344,7 +376,7 @@ async function fetchSoccerTeam(teamName) {
 
   for (const candidate of candidates) {
     try {
-      const url = `https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=${encodeURIComponent(candidate)}`;
+      const url = `https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=${encodeURIComponent(candidate)}`;
       const res = await fetchWithTimeout(url);
       const data = await res.json();
       if (!data || !Array.isArray(data.teams)) continue;
@@ -370,7 +402,7 @@ async function fetchSoccerTeam(teamName) {
 async function lookupVenueById(idVenue) {
   if (!idVenue) return null;
   try {
-    const url = `https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php?id=${encodeURIComponent(idVenue)}`;
+    const url = `https://www.thesportsdb.com/api/v1/json/123/lookupvenue.php?id=${encodeURIComponent(idVenue)}`;
     const res = await fetchWithTimeout(url);
     const data = await res.json();
     const venue = data && Array.isArray(data.venues) ? data.venues[0] : null;
@@ -554,6 +586,7 @@ function updateCrestPreview(type) {
 }
 
 async function setStartAddress() {
+  if (frozenGuard()) return;
   const address = document.getElementById("startAddress").value;
   if (!address) return;
 
@@ -703,6 +736,7 @@ function planningMatches(trip) { return trip.matches.filter(m => !hasNoTickets(m
 // ---------- Match Handling ----------
 async function addMatch(e) {
   e.preventDefault();
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   if (!trip) return;
 
@@ -770,6 +804,8 @@ async function addMatch(e) {
     if (index !== -1) {
       trip.matches[index] = matchData;
     }
+    // Geänderte Spieldaten -> alter One-Pager passt nicht mehr
+    if (trip.briefings) delete trip.briefings[editingMatchId];
   } else {
     trip.matches.push(matchData);
   }
@@ -784,6 +820,7 @@ async function addMatch(e) {
 }
 
 function editMatch(matchId) {
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   if (!trip) return;
 
@@ -863,6 +900,7 @@ function resetMatchForm() {
 }
 
 function deleteMatch(matchId) {
+  if (frozenGuard()) return;
   if (editingMatchId === matchId) {
     resetMatchForm();
   }
@@ -872,7 +910,8 @@ function deleteMatch(matchId) {
   Object.keys(trip.overnightOverrides).forEach(k => {
     if (k.startsWith(`${matchId}@`)) delete trip.overnightOverrides[k];
   });
-  
+  if (trip.briefings) delete trip.briefings[matchId]; // One-Pager gehört zum Spiel
+
   delete trip.plans;
   currentPlans = null;
 
@@ -926,7 +965,6 @@ function bannerHtml(type, html, iconName = null) {
   return `<div class="banner banner-${type}">${icon(iconName || BANNER_ICONS[type] || "info")}<div>${html}</div></div>`;
 }
 const starHtml = () => `<span class="must-badge" title="Highlightspiel">${icon("star", "icon-fill")}</span>`;
-const fmtTime = d => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 function crestImg(url, alt) {
   const clean = safeHttpUrl(url);
   return clean ? `<img class="crest" src="${escapeHtml(clean)}" alt="${escapeHtml(alt)}" loading="lazy" onerror="this.remove()">` : "";
@@ -1100,9 +1138,39 @@ function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
   return { trip, skipped: rawTrip.matches.length - matches.length };
 }
 
+// ---------- Bestätigte Trips sind eingefroren ----------
+// Keine Neuberechnung, kein Bearbeiten/Löschen/Hinzufügen, kein Alternativen-Wechsel, keine Übernachtungsänderung.
+function isTripFrozen(trip = getActiveTrip()) { return !!(trip && trip.confirmed); }
+
+function frozenGuard() {
+  if (!isTripFrozen()) return false;
+  pendingPlanMessage = { type: "info", text: "Der Trip ist bestätigt und damit eingefroren. Zum Ändern zuerst oben „Aufheben“ klicken." };
+  if (currentPlans && currentPlans[currentPlanIndex]) {
+    renderPlanSwitcher(currentPlans[currentPlanIndex]);
+    document.getElementById("planSwitcher").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } else {
+    alert(pendingPlanMessage.text);
+    pendingPlanMessage = null;
+  }
+  return true;
+}
+
+// Oberfläche passend sperren (CSS über body.trip-frozen)
+function applyFrozenUi() {
+  const frozen = isTripFrozen();
+  document.body.classList.toggle("trip-frozen", frozen);
+  ["calculateRouteButton", "optimizationMode", "startAddress"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = frozen;
+  });
+  const fieldset = document.getElementById("matchFormFields");
+  if (fieldset) fieldset.disabled = frozen;
+}
+
 function renderActiveTrip() {
   const trip = getActiveTrip();
   if (!trip) return;
+  applyFrozenUi();
   if (!trip.overnightOverrides) trip.overnightOverrides = {};
 
   document.getElementById("matchCount").innerText = trip.matches.length;
@@ -1388,8 +1456,8 @@ function addDaysIso(dateStr, delta) {
 // die Tage danach rechnen ab dort weiter.
 async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
   const arrBuffer = nextMatch.customArrivalBuffer ?? cfg().arrivalBufferMin;
-  const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
-  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour);
+  const requiredArrival = new Date(kickoffDate(nextMatch).getTime() - arrBuffer * 60000);
+  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour, matchTz(nextMatch));
   const lastDayMin = Math.max(0, (requiredArrival - morningStart) / 60000);
 
   const days = [];
@@ -1422,7 +1490,7 @@ async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
       const name = (await cachedReverseGeocode(p.lat, p.lng)) || `Ungefähr ${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`;
       to = { lat: p.lat, lng: p.lng, name };
     }
-    days.push({ date, key, override: !!ov, from: cur, to });
+    days.push({ date, key, override: !!ov, from: cur, to, tz: matchTz(nextMatch) });
     cur = to;
     curDate = date;
   }
@@ -1475,7 +1543,6 @@ function formatDuration(min) {
 
 // Zeichnet die Fahrtage auf der Karte und liefert das HTML der Tageskacheln (null = Lauf veraltet).
 async function renderJourneyTiles(days, myRun) {
-  const fmt = fmtTime;
   let out = "";
   for (const day of days) {
     const leg = await getCachedRoute(day.from.lat, day.from.lng, day.to.lat, day.to.lng);
@@ -1484,7 +1551,7 @@ async function renderJourneyTiles(days, myRun) {
     L.marker([day.to.lat, day.to.lng], { icon: pinIcon("night") }).bindPopup(`<b>Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
 
     const driveMin = leg.durationMin;
-    const dep = timeToDateOnDay(day.date, cfg().nextDayStartHour);
+    const dep = timeToDateOnDay(day.date, cfg().nextDayStartHour, day.tz);
     const arr = new Date(dep.getTime() + driveMin * 60000);
     const inputId = `driveStopInput_${day.key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const longWarning = driveMin > DAILY_DRIVE_MIN
@@ -1500,7 +1567,7 @@ async function renderJourneyTiles(days, myRun) {
         <div class="day-tile-body">
           ${driveItemHtml({
             title: `Fahrt nach ${escapeHtml(day.to.name)}`,
-            dep: fmt(dep), durationMin: driveMin, arr: fmt(arr), arrLabel: "Ankunft ca.",
+            dep: fmtTimeTz(dep, day.fromTz || day.tz), durationMin: driveMin, arr: fmtTimeTz(arr, day.tz), arrLabel: "Ankunft ca.",
             link: generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng),
             extra: longWarning
           })}
@@ -1549,18 +1616,79 @@ function generateHotelSearchLink(lat, lng) {
 }
 
 function calculateMatchEndTime(match) {
-  const kickOff = new Date(`${match.date}T${match.time}`);
+  const kickOff = kickoffDate(match);
   const depBuffer = match.customDepartureBuffer ?? cfg().departureBufferMin;
   const totalDurationMin = 90 + cfg().halfTimeMin + cfg().stoppageTimeMin + depBuffer;
   return new Date(kickOff.getTime() + totalDurationMin * 60000);
 }
 
-function timeToDateOnDay(dateStr, timeStr) {
-  const [h, m] = timeStr.split(":").map(Number);
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setHours(h, m, 0, 0);
-  return d;
+// ---------- Zeitzonen ----------
+// Anstoßzeiten sind Ortszeiten des Stadions. Damit Fahrzeiten zwischen Ländern stimmen (z. B. England = MEZ −1 h),
+// wird jede Uhrzeit mit der Zeitzone des jeweiligen Orts in einen absoluten Zeitpunkt umgerechnet.
+const BROWSER_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Berlin"; } catch (e) { return "Europe/Berlin"; } })();
+const COUNTRY_TZ = {
+  gb: "Europe/London", ie: "Europe/Dublin", pt: "Europe/Lisbon", is: "Atlantic/Reykjavik", fo: "Atlantic/Faroe",
+  de: "Europe/Berlin", nl: "Europe/Amsterdam", be: "Europe/Brussels", lu: "Europe/Luxembourg", fr: "Europe/Paris",
+  es: "Europe/Madrid", it: "Europe/Rome", at: "Europe/Vienna", ch: "Europe/Zurich", li: "Europe/Vaduz",
+  dk: "Europe/Copenhagen", no: "Europe/Oslo", se: "Europe/Stockholm", pl: "Europe/Warsaw", cz: "Europe/Prague",
+  sk: "Europe/Bratislava", hu: "Europe/Budapest", si: "Europe/Ljubljana", hr: "Europe/Zagreb", ba: "Europe/Sarajevo",
+  rs: "Europe/Belgrade", me: "Europe/Podgorica", mk: "Europe/Skopje", al: "Europe/Tirane", mt: "Europe/Malta",
+  sm: "Europe/San_Marino", ad: "Europe/Andorra", mc: "Europe/Monaco", xk: "Europe/Belgrade",
+  fi: "Europe/Helsinki", ee: "Europe/Tallinn", lv: "Europe/Riga", lt: "Europe/Vilnius", gr: "Europe/Athens",
+  cy: "Asia/Nicosia", ro: "Europe/Bucharest", bg: "Europe/Sofia", md: "Europe/Chisinau", ua: "Europe/Kyiv",
+  tr: "Europe/Istanbul", by: "Europe/Minsk", ge: "Asia/Tbilisi", am: "Asia/Yerevan", az: "Asia/Baku", il: "Asia/Jerusalem"
+};
+
+// Zeitzone eines Orts anhand Ländercode (+ Sonderfälle Kanaren, Madeira/Azoren)
+function zoneFor(countryCode, lat, lng) {
+  const cc = String(countryCode || "").toLowerCase();
+  if (cc === "es" && lat < 30) return "Atlantic/Canary";
+  if (cc === "pt" && lng < -20) return "Atlantic/Azores";
+  if (cc === "pt" && lng < -14) return "Atlantic/Madeira";
+  return COUNTRY_TZ[cc] || BROWSER_TZ;
 }
+const matchTz = m => zoneFor(m.countryCode, m.lat, m.lng);
+const homeTz = trip => (trip && trip.startAddress ? zoneFor(trip.startAddress.countryCode, trip.startAddress.lat, trip.startAddress.lng) : BROWSER_TZ);
+
+// Versatz einer Zeitzone zu UTC in Minuten zu einem Zeitpunkt
+function tzOffsetMin(date, tz) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    }).formatToParts(date);
+    const v = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    return (Date.UTC(+v.year, +v.month - 1, +v.day, +v.hour % 24, +v.minute, +v.second) - date.getTime()) / 60000;
+  } catch (e) {
+    return -date.getTimezoneOffset();
+  }
+}
+
+// Datum + Uhrzeit (Ortszeit in tz) -> absoluter Zeitpunkt. Ohne tz: Browser-Zeitzone.
+function timeToDateOnDay(dateStr, timeStr, tz = null) {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, mi] = String(timeStr || "00:00").split(":").map(Number);
+  if (!tz) return new Date(y, mo - 1, d, h, mi, 0, 0);
+  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  let utc = wall - tzOffsetMin(new Date(wall), tz) * 60000;
+  utc = wall - tzOffsetMin(new Date(utc), tz) * 60000; // zweiter Durchgang für Zeitumstellungstage
+  return new Date(utc);
+}
+
+const kickoffDate = m => timeToDateOnDay(m.date, m.time, matchTz(m));
+
+const TZ_CITY_DE = { Lisbon: "Lissabon", Kyiv: "Kiew", Bucharest: "Bukarest", Warsaw: "Warschau", Prague: "Prag", Vienna: "Wien",
+  Brussels: "Brüssel", Copenhagen: "Kopenhagen", Athens: "Athen", Rome: "Rom", Belgrade: "Belgrad", Canary: "Kanaren", Azores: "Azoren", Zurich: "Zürich" };
+const tzCity = tz => { const c = String(tz).split("/").pop().replace(/_/g, " "); return TZ_CITY_DE[c] || c; };
+
+// Uhrzeit in einer Zeitzone; weicht sie von der eigenen ab, wird der Ort dazugeschrieben (z. B. "15:00 (London)")
+function fmtTimeTz(date, tz) {
+  const opts = { hour: "2-digit", minute: "2-digit", timeZone: tz || BROWSER_TZ };
+  const time = date.toLocaleTimeString("de-DE", opts);
+  if (!tz || tzOffsetMin(date, tz) === tzOffsetMin(date, BROWSER_TZ)) return time;
+  return `${time} (${tzCity(tz)})`;
+}
+const dayKeyTz = (date, tz) => date.toLocaleDateString("de-DE", { timeZone: tz || BROWSER_TZ });
 
 function priorityScore(m) { return groundhopperScore(m); }
 
@@ -1583,8 +1711,7 @@ async function computeDayDP(segment, startLoc, startTime) {
   for (let j = 0; j < n; j++) {
     const m = segment[j];
     const arrBuffer = m.customArrivalBuffer ?? cfg().arrivalBufferMin;
-    const kickoff = new Date(`${m.date}T${m.time}`);
-    const requiredArrival = new Date(kickoff.getTime() - arrBuffer * 60000);
+    const requiredArrival = new Date(kickoffDate(m).getTime() - arrBuffer * 60000);
 
     let best = null;
 
@@ -1714,9 +1841,9 @@ async function chainWithForcedIndices(dayMatches, forcedIndicesInput, startLoc, 
 function overnightFeasibility(prevMatch, nextMatch, totalTravelMin, fromOvernight = false) {
   const prevEnd = calculateMatchEndTime(prevMatch);
   const arrBuffer = nextMatch.customArrivalBuffer ?? cfg().arrivalBufferMin;
-  const requiredArrival = new Date(new Date(`${nextMatch.date}T${nextMatch.time}`).getTime() - arrBuffer * 60000);
-  const nightCutoff = timeToDateOnDay(prevMatch.date, cfg().maxNightDriveTime);
-  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour);
+  const requiredArrival = new Date(kickoffDate(nextMatch).getTime() - arrBuffer * 60000);
+  const nightCutoff = timeToDateOnDay(prevMatch.date, cfg().maxNightDriveTime, matchTz(prevMatch));
+  const morningStart = timeToDateOnDay(nextMatch.date, cfg().nextDayStartHour, matchTz(nextMatch));
   const gapDays = Math.max(0, Math.round(
     (new Date(`${nextMatch.date}T00:00:00`) - new Date(`${prevMatch.date}T00:00:00`)) / 86400000));
    const freeDayMin = Math.max(0, gapDays - 1) * DAILY_DRIVE_MIN; // pro freiem Tag konservativ 12 h Fahrzeit
@@ -1769,7 +1896,7 @@ const ARRIVAL_STOP_PREFIX = "__start@";
 const arrivalDayKey = matchDate => `${ARRIVAL_STOP_PREFIX}${addDaysIso(matchDate, -1)}`;
 
 function morningWindowMin(m) {
-  return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, cfg().nextDayStartHour)) / 60000);
+  return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, cfg().nextDayStartHour, matchTz(m))) / 60000);
 }
 
 // Machbar mit Anreisetag? Am Vortag bis zu DAILY_DRIVE_MIN fahren, Rest am Spieltag morgens.
@@ -1858,6 +1985,7 @@ async function nightCheck(origin, m) {
 }
 
 async function saveOvernightOverride(matchId, inputElId) {
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   const address = document.getElementById(inputElId).value;
   if (!address) return;
@@ -1872,6 +2000,7 @@ async function saveOvernightOverride(matchId, inputElId) {
 }
 
 function clearOvernightOverride(matchId) {
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   delete trip.overnightOverrides[matchId];
   saveLocalStorage();
@@ -2048,7 +2177,7 @@ function initialPlanState(trip, firstDate) {
     dayChains: [],
     currentLoc: { lat: trip.startAddress.lat, lng: trip.startAddress.lng },
     // Abfahrt von zu Hause frühestens zur eingestellten Morgen-Startzeit des ersten Spieltags
-    currentTime: timeToDateOnDay(firstDate, cfg().nextDayStartHour),
+    currentTime: timeToDateOnDay(firstDate, cfg().nextDayStartHour, homeTz(trip)),
     totalTravelMin: 0,
     tightNights: 0,
     infeasibleNights: 0,
@@ -2069,7 +2198,7 @@ function overnightOrigin(trip, lastOfDay) {
 
 function requiredArrivalTime(match) {
   const arrBuffer = match.customArrivalBuffer ?? cfg().arrivalBufferMin;
-  return new Date(new Date(`${match.date}T${match.time}`).getTime() - arrBuffer * 60000);
+  return new Date(kickoffDate(match).getTime() - arrBuffer * 60000);
 }
 
 // Hängt einen Tag (gewählte Spielkette) an einen Planzustand an und liefert den neuen Zustand.
@@ -2100,7 +2229,8 @@ async function appendDay(planState, trip, date, chain, dropped, nextDate) {
   return {
     dayChains: [...planState.dayChains, { date, chain, dropped, overnightAfter: overnight }],
     currentLoc: nextLoc,
-    currentTime: nextDate ? timeToDateOnDay(nextDate, cfg().nextDayStartHour) : planState.currentTime,
+    // nur relevant, solange man noch zu Hause startet -> Zeitzone des Startorts
+    currentTime: nextDate ? timeToDateOnDay(nextDate, cfg().nextDayStartHour, homeTz(trip)) : planState.currentTime,
     totalTravelMin: planState.totalTravelMin + dayTravelMin,
     tightNights: planState.tightNights + tightAdd,
     infeasibleNights: planState.infeasibleNights + infeasibleAdd,
@@ -2218,7 +2348,7 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
     const pos = dc.chain.findIndex(m => m.id === removed.id);
     const prev = dc.chain[pos - 1] || null;
     const next = dc.chain[pos + 1] || null;
-    const morning = timeToDateOnDay(dc.date, cfg().nextDayStartHour);
+    const morning = timeToDateOnDay(dc.date, cfg().nextDayStartHour, homeTz(trip));
 
     // Ausgangspunkt der Lücke: vorheriges Spiel desselben Tages, sonst Übernachtung des Vortags, sonst Start
     let startLoc, startTime;
@@ -2305,6 +2435,7 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
 let pendingPlanMessage = null; // einmalige Rückmeldung über dem Plan (z. B. nach "Keine Tickets")
 
 async function markNoTickets(matchId) {
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   const match = trip && trip.matches.find(m => m.id === matchId);
   if (!match) return;
@@ -2404,6 +2535,7 @@ function setCalcButtonBusy(busy) {
 }
 
 async function calculateRoute() {
+  if (frozenGuard()) return;
   const trip = getActiveTrip();
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
@@ -2469,6 +2601,7 @@ async function calculateRoute() {
 }
 
 function choosePlan(delta) {
+  if (frozenGuard()) return;
   if (!currentPlans || currentPlans.length === 0) return;
   currentPlanIndex = (currentPlanIndex + delta + currentPlans.length) % currentPlans.length;
 
@@ -2482,6 +2615,7 @@ function choosePlan(delta) {
 }
 
 async function renderCurrentPlan() {
+  applyFrozenUi();
   const trip = getActiveTrip();
   if (!trip || !currentPlans || currentPlans.length === 0) return;
   const plan = currentPlans[currentPlanIndex];
@@ -2512,6 +2646,13 @@ function renderPlanSwitcher(plan) {
   const notes = plan.repairNotes && plan.repairNotes.length
     ? `<details class="repair-notes"><summary>${icon("ticket-x")} Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
+
+  if (isTripFrozen(trip)) {
+    el.innerHTML = header + `<div class="plan-switcher-single">
+      <strong class="frozen-title">${icon("badge-check", "tone-green")} Bestätigter Plan</strong>
+      ${planStatsHtml(plan)}${notes}</div>`;
+    return;
+  }
 
   if (!currentPlans || currentPlans.length <= 1) {
     el.innerHTML = header + `<div class="plan-switcher-single">${planStatsHtml(plan)}${notes}</div>`;
@@ -2563,6 +2704,7 @@ async function renderDayTiles(plan, trip) {
   routeLayer.clearLayers();
 
   let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
+  let currentTz = homeTz(trip); // Zeitzone des Orts, von dem aus als Nächstes losgefahren wird
   let html = "";
   const allDropped = [];
   const drivenDates = new Set(); // Tage, die als Fahrtag gezeigt werden
@@ -2593,7 +2735,7 @@ async function renderDayTiles(plan, trip) {
         to = { lat: p.lat, lng: p.lng, name };
       }
     }
-    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, label: `${icon("luggage")} Anreisetag` };
+    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, tz: homeTz(trip), label: `${icon("luggage")} Anreisetag` };
     drivenDates.add(date);
   }
   let arrivalRendered = false;
@@ -2607,6 +2749,7 @@ async function renderDayTiles(plan, trip) {
       if (arrivalHtml === null) return;
       html += arrivalHtml;
       currentLoc = { ...arrivalDay.to };
+      currentTz = matchTz(firstDc.chain[0]);
       arrivalRendered = true;
     }
     if (dc.chain.length === 0 && drivenDates.has(dc.date)) continue;
@@ -2634,19 +2777,23 @@ async function renderDayTiles(plan, trip) {
         L.geoJSON(osrm.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
       }
 
-      const kickOff = new Date(`${match.date}T${match.time}`);
+      const tz = matchTz(match);
+      const kickOff = kickoffDate(match);
       const arrBuffer = match.customArrivalBuffer ?? cfg().arrivalBufferMin;
       const targetArrival = new Date(kickOff.getTime() - arrBuffer * 60000);
       const departureTime = new Date(targetArrival.getTime() - osrm.durationMin * 60000);
-      const depPrefix = departureTime.toDateString() !== kickOff.toDateString()
-        ? departureTime.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' }) + ', '
+      const depPrefix = dayKeyTz(departureTime, currentTz) !== dayKeyTz(kickOff, tz)
+        ? departureTime.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: currentTz }) + ', '
         : '';
+      // Anstoß in Ortszeit; weicht die eigene Zeitzone ab, zusätzlich "bei dir"
+      const localKickoff = tzOffsetMin(kickOff, tz) !== tzOffsetMin(kickOff, BROWSER_TZ)
+        ? ` <span class="muted kickoff-local" title="Uhrzeit in deiner Zeitzone">(${fmtTimeTz(kickOff, BROWSER_TZ)} bei dir)</span>` : "";
       const deeplink = generateGoogleDeeplink(currentLoc.lat, currentLoc.lng, match.lat, match.lng);
       const leagueLabel = match.leagueName || getLeagueName(match.countryCode, match.leagueLevel);
 
       tileBody += driveItemHtml({
         title: `Fahrt nach ${escapeHtml(match.stadium)}`,
-        dep: depPrefix + fmtTime(departureTime), durationMin: osrm.durationMin, arr: fmtTime(targetArrival),
+        dep: depPrefix + fmtTimeTz(departureTime, currentTz), durationMin: osrm.durationMin, arr: fmtTimeTz(targetArrival, tz),
         arrLabel: "Am Stadion", link: deeplink
       });
       tileBody += `
@@ -2660,7 +2807,7 @@ async function renderDayTiles(plan, trip) {
                 ${crestImg(match.awayLogo, match.away)}
                 ${match.mustAttend ? starHtml() : ''}<span class="print-only-inline">${ticketBadgeHtml(match)}</span>
               </div>
-              <span class="kickoff">${icon("whistle")} ${match.time} Uhr</span>
+              <span class="kickoff">${icon("whistle")} ${match.time} Uhr${tz !== BROWSER_TZ && tzOffsetMin(kickOff, tz) !== tzOffsetMin(kickOff, BROWSER_TZ) ? " Ortszeit" : ""}${localKickoff}</span>
             </div>
             <div class="tl-meta">
               <span>${icon("shield-half")} ${matchContextLabel(match)}</span>
@@ -2677,6 +2824,7 @@ async function renderDayTiles(plan, trip) {
       `;
 
       currentLoc = { lat: match.lat, lng: match.lng, name: match.stadium };
+      currentTz = tz;
     }
 
     let journeyHtml = "";
@@ -2708,6 +2856,7 @@ async function renderDayTiles(plan, trip) {
       let drivingDays = [];
       if (opPlan.gapDays >= 2) {
         drivingDays = await planDrivingDays(overnightLoc, lastMatch, nextMatchGuess, trip);
+        drivingDays.forEach((day, i) => { day.fromTz = i === 0 ? matchTz(lastMatch) : day.tz; });
         if (myRun !== renderRunId) return;
         journeyHtml = await renderJourneyTiles(drivingDays, myRun);
         if (journeyHtml === null) return;
@@ -2756,6 +2905,7 @@ async function renderDayTiles(plan, trip) {
       currentLoc = drivingDays.length
         ? { ...drivingDays[drivingDays.length - 1].to }
         : { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
+      currentTz = drivingDays.length ? drivingDays[drivingDays.length - 1].tz : matchTz(lastMatch);
     }
 
     html += `

@@ -807,6 +807,121 @@ Gib JSON in genau diesem Format zurück:
     </article>`;
   }
 
+  // ---------- Übersicht: alle One-Pager aller Trips (ansehen & löschen) ----------
+  const kb = n => `${(n / 1024).toLocaleString("de-DE", { maximumFractionDigits: n < 10240 ? 1 : 0 })} KB`;
+  const STORAGE_LIMIT = 5 * 1024 * 1024; // übliche Grenze des Browser-Speichers pro Seite
+
+  function storageUsage() {
+    let total = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        total += (k.length + (localStorage.getItem(k) || "").length) * 2; // UTF-16
+      }
+    } catch (e) { /* kein Zugriff */ }
+    return total;
+  }
+
+  function ensureManagerModal() {
+    let el = document.getElementById("briefingManagerModal");
+    if (el) return el;
+    document.body.insertAdjacentHTML("beforeend", `
+      <div id="briefingManagerModal" class="modal" onclick="if (event.target === this) closeBriefingManager()">
+        <div class="modal-content manager-modal" role="dialog" aria-modal="true" aria-label="Match One-Pager"></div>
+      </div>`);
+    el = document.getElementById("briefingManagerModal");
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && el.style.display === "flex") closeBriefingManager(); });
+    return el;
+  }
+
+  window.openBriefingManager = function () {
+    renderBriefingManager();
+    ensureManagerModal().style.display = "flex";
+  };
+  window.closeBriefingManager = function () {
+    const el = document.getElementById("briefingManagerModal");
+    if (el) el.style.display = "none";
+  };
+
+  function renderBriefingManager() {
+    const box = ensureManagerModal().querySelector(".modal-content");
+    const used = storageUsage();
+    let briefingBytes = 0, count = 0;
+    const groups = state.trips.map(trip => {
+      const entries = Object.entries(trip.briefings || {}).map(([id, b]) => {
+        const m = trip.matches.find(x => x.id === id);
+        const size = JSON.stringify(b).length * 2;
+        briefingBytes += size; count++;
+        return { id, b, m, size };
+      }).sort((a, b) => ((a.m && a.m.date) || "").localeCompare((b.m && b.m.date) || ""));
+      return { trip, entries };
+    }).filter(g => g.entries.length);
+
+    const pct = Math.min(100, Math.round(used / STORAGE_LIMIT * 100));
+    const rows = groups.map(({ trip, entries }) => `
+      <section class="mgr-trip">
+        <div class="mgr-trip-head">
+          <h4>${escapeHtml(trip.name)}${trip.id === state.activeTripId ? ' <span class="muted">(aktiv)</span>' : ""}</h4>
+          <button class="btn btn-ghost btn-sm" onclick="deleteTripBriefings('${trip.id}')">${icon("trash-2")} Alle löschen</button>
+        </div>
+        <ul class="mgr-list">${entries.map(({ id, b, m, size }) => `
+          <li>
+            <div class="mgr-info">
+              <strong>${m ? `${escapeHtml(m.home)} – ${escapeHtml(m.away)}` : '<span class="muted">Gelöschtes Spiel</span>'}</strong>
+              <span class="muted">${m ? `${formatDateShort(m.date)} · ` : ""}erstellt ${new Date(b.createdAt).toLocaleDateString("de-DE")} · ${escapeHtml(b.model || "")} · ${kb(size)}</span>
+            </div>
+            <div class="mgr-actions">
+              ${m ? `<button class="icon-btn" title="Ansehen" aria-label="Ansehen" onclick="openBriefingFromManager('${trip.id}', '${id}')">${icon("book-open")}</button>` : ""}
+              <button class="icon-btn mgr-del" title="Löschen" aria-label="Löschen" onclick="deleteBriefing('${trip.id}', '${id}')">${icon("trash-2")}</button>
+            </div>
+          </li>`).join("")}
+        </ul>
+      </section>`).join("");
+
+    box.innerHTML = `
+      <div class="modal-header">
+        <div><h2>Match One-Pager</h2><p class="settings-hint">Alle gespeicherten One-Pager aus allen Trips.</p></div>
+        <button type="button" class="modal-close" onclick="closeBriefingManager()" aria-label="Schließen">${icon("x")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="mgr-storage">
+          <div class="mgr-storage-text"><span>Browser-Speicher: <strong>${kb(used)}</strong> von ca. 5 MB</span><span class="muted">davon One-Pager: ${kb(briefingBytes)} (${count})</span></div>
+          <div class="mgr-bar"><span style="width:${pct}%"></span><span class="mgr-bar-brief" style="width:${Math.min(100, briefingBytes / STORAGE_LIMIT * 100)}%"></span></div>
+        </div>
+        ${rows || `<div class="empty-state">${icon("book-open", "tone-violet")}<p>Noch keine One-Pager gespeichert.</p></div>`}
+      </div>`;
+  }
+
+  window.deleteBriefing = function (tripId, matchId) {
+    const trip = state.trips.find(t => t.id === tripId);
+    if (!trip || !trip.briefings) return;
+    delete trip.briefings[matchId];
+    saveLocalStorage();
+    renderBriefingManager();
+    if (tripId === state.activeTripId && currentPlans) renderCurrentPlan();
+  };
+
+  window.deleteTripBriefings = function (tripId) {
+    const trip = state.trips.find(t => t.id === tripId);
+    if (!trip || !trip.briefings) return;
+    if (!confirm(`Alle ${Object.keys(trip.briefings).length} One-Pager von „${trip.name}“ löschen?`)) return;
+    trip.briefings = {};
+    saveLocalStorage();
+    renderBriefingManager();
+    if (tripId === state.activeTripId && currentPlans) renderCurrentPlan();
+  };
+
+  window.openBriefingFromManager = function (tripId, matchId) {
+    if (tripId !== state.activeTripId) {
+      state.activeTripId = tripId;
+      saveLocalStorage();
+      renderTripSelect();
+      renderActiveTrip();
+    }
+    closeBriefingManager();
+    openBriefing(matchId);
+  };
+
   // ---------- Druck ----------
   // Einzelner One-Pager
   window.printBriefing = function (matchId) {

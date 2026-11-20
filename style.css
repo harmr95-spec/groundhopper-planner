@@ -702,3 +702,33 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; bo
   .settings-grid, .field-pair { grid-template-columns: 1fr; }
   .modal { padding: 0.5rem; }
 }
+
+/* ---------- Eingefrorener (bestätigter) Trip ---------- */
+fieldset { border: none; min-width: 0; }
+.frozen-hint { display: none; align-items: flex-start; gap: 0.45rem; font-size: 0.83rem; padding: 0.55rem 0.7rem; margin-bottom: 0.7rem; border-radius: var(--radius-sm); background: var(--green-soft); color: var(--text); }
+.frozen-hint .icon { color: var(--green); margin-top: 0.1rem; }
+.trip-frozen .frozen-hint { display: flex; }
+.trip-frozen #matchFormFields { opacity: 0.45; }
+.trip-frozen .match-menu, .trip-frozen .tl-night .input-row { display: none; }
+.trip-frozen #calculateRouteButton, .trip-frozen #optimizationMode, .trip-frozen #startAddress, .trip-frozen #startAddress + .btn { opacity: 0.5; cursor: not-allowed; }
+.trip-frozen .tt-no:not(.active) { opacity: 0.4; }
+.frozen-title { display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem; }
+
+/* ---------- One-Pager-Übersicht ---------- */
+.manager-modal { width: 640px; }
+.btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+.mgr-storage { padding: 0.75rem 0.85rem; margin: 0.6rem 0 1rem; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
+.mgr-storage-text { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.85rem; margin-bottom: 0.5rem; }
+.mgr-bar { position: relative; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.mgr-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--green); border-radius: 999px; }
+.mgr-bar > .mgr-bar-brief { background: var(--violet); }
+.mgr-trip + .mgr-trip { margin-top: 1rem; }
+.mgr-trip-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.mgr-trip-head h4 { font-size: 0.95rem; }
+.mgr-list { list-style: none; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.mgr-list li { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.55rem 0.75rem; }
+.mgr-list li + li { border-top: 1px solid var(--border); }
+.mgr-info { display: flex; flex-direction: column; min-width: 0; font-size: 0.88rem; }
+.mgr-info .muted { font-size: 0.76rem; }
+.mgr-actions { display: flex; gap: 0.2rem; flex: none; }
+.mgr-del:hover { color: var(--red); background: var(--red-soft); }
