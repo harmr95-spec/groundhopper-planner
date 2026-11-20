@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS = {
   nextDayStartHour: "08:00",
   maxExtraNightDriveMin: 120,
   returnHome: true, // Rückfahrt nach Hause einplanen
+  // Kosten: Mitfahrer, Antrieb, Verbrauch, Spritpreise (Standard + pro Land)
+  costs: { persons: 1, fuelType: "petrol", consumption: 7, defaultFuelPrice: 1.8, fuelPrices: {} },
   groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
 };
 
@@ -21,7 +23,14 @@ function completeSettings(raw) {
   const base = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   const out = { ...base, ...(raw || {}) };
   out.groundhopperWeights = { ...base.groundhopperWeights, ...((raw && raw.groundhopperWeights) || {}) };
+  out.costs = { ...base.costs, ...((raw && raw.costs) || {}) };
   return out;
+}
+
+// Einstellungen, die die Planung beeinflussen (Kosten nicht) – für den Hinweis "Plan veraltet"
+function planSettingsKey() {
+  const { costs, ...rest } = cfg(); // eslint-disable-line no-unused-vars
+  return JSON.stringify(rest);
 }
 
 // Einstellungen des aktiven Trips (lesen und schreiben)
@@ -947,6 +956,7 @@ function deleteMatch(matchId) {
     if (k.startsWith(`${matchId}@`)) delete trip.overnightOverrides[k];
   });
   if (trip.briefings) delete trip.briefings[matchId]; // One-Pager gehört zum Spiel
+  if (typeof removeCostsForMatch === "function") removeCostsForMatch(trip, matchId);
 
   delete trip.plans;
   currentPlans = null;
@@ -1034,6 +1044,21 @@ function sanitizeSettings(raw) {
     if (v !== null && v >= 0 && v <= 600) out[key] = Math.round(v);
   });
   if (typeof raw.returnHome === "boolean") out.returnHome = raw.returnHome;
+  const c = raw.costs;
+  if (c && typeof c === "object") {
+    const fuelPrices = {};
+    if (c.fuelPrices && typeof c.fuelPrices === "object") {
+      Object.entries(c.fuelPrices).forEach(([cc, v]) => { const n = toNum(v); if (/^[a-z]{2}$/.test(cc) && n !== null && n >= 0 && n < 20) fuelPrices[cc] = n; });
+    }
+    const persons = toNum(c.persons), cons = toNum(c.consumption), price = toNum(c.defaultFuelPrice);
+    out.costs = {
+      persons: persons !== null && persons >= 1 && persons <= 9 ? Math.round(persons) : 1,
+      fuelType: ["petrol", "diesel", "electric"].includes(c.fuelType) ? c.fuelType : "petrol",
+      consumption: cons !== null && cons >= 0 && cons <= 100 ? cons : 7,
+      defaultFuelPrice: price !== null && price >= 0 && price < 20 ? price : 1.8,
+      fuelPrices
+    };
+  }
   ["maxNightDriveTime", "nextDayStartHour"].forEach(key => {
     if (TIME_RE.test(String(raw[key]))) out[key] = raw[key];
   });
@@ -1160,6 +1185,9 @@ function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
   // Bestätigung und KI-One-Pager übernehmen (One-Pager auf die neuen Spiel-IDs umschlüsseln)
   if (rawTrip.confirmed && typeof rawTrip.confirmed === "object") {
     trip.confirmed = { at: toText(rawTrip.confirmed.at, 40), planSignature: toText(rawTrip.confirmed.planSignature, 2000) };
+  }
+  if (rawTrip.costs && typeof sanitizeStoredCosts === "function") {
+    trip.costs = sanitizeStoredCosts(rawTrip.costs, new Map([...byOldId].map(([oldId, m]) => [oldId, m.id])));
   }
   if (rawTrip.briefings && typeof rawTrip.briefings === "object" && typeof sanitizeStoredBriefing === "function") {
     trip.briefings = {};
@@ -1398,6 +1426,7 @@ async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = fals
       const route = data.routes[0];
       return {
         durationMin: Math.round(route.duration / 60),
+        distanceKm: Number.isFinite(route.distance) ? route.distance / 1000 : null,
         geometry: route.geometry,
         steps: withSteps && route.legs && route.legs[0] ? route.legs[0].steps : null,
         estimated: false
@@ -1407,7 +1436,8 @@ async function getOSRMRoute(startLat, startLng, endLat, endLng, withSteps = fals
     console.error("OSRM Error:", err);
   }
   routingEstimated = true;
-  return { durationMin: estimateTravelMin(startLat, startLng, endLat, endLng), geometry: null, steps: null, estimated: true };
+  const estMin = estimateTravelMin(startLat, startLng, endLat, endLng);
+  return { durationMin: estMin, distanceKm: estMin / 60 * 75, geometry: null, steps: null, estimated: true };
 }
 
 const travelKey = (lat1, lng1, lat2, lng2) =>
@@ -1539,7 +1569,7 @@ async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
 // ---------- Heimreise ----------
 // Nach dem letzten Spiel: direkt heim, wenn das bis zur spätesten Fahrzeit klappt; sonst Übernachtung
 // (Stadion bzw. eigene Adresse) und am nächsten Tag/den nächsten Tagen nach Hause.
-async function renderReturnTrip(lastMatch, trip, myRun) {
+async function renderReturnTrip(lastMatch, trip, myRun, tile) {
   const home = { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
   const tz = matchTz(lastMatch);
   const override = trip.overnightOverrides[lastMatch.id];
@@ -1559,7 +1589,8 @@ async function renderReturnTrip(lastMatch, trip, myRun) {
       tileBody: driveItemHtml({
         title: `${icon("house", "tone-green")} Heimfahrt nach ${escapeHtml(homeName)}`,
         dep: fmtTimeTz(end, tz), durationMin: direct.durationMin, arr: fmtTimeTz(arr, homeTz(trip)),
-        arrLabel: "Zuhause ca.", link: homeLink(lastMatch)
+        arrLabel: "Zuhause ca.", link: homeLink(lastMatch), distanceKm: direct.distanceKm,
+        cost: { key: `drive:home:${lastMatch.id}`, tile, legs: [{ from: lastMatch, to: home, route: direct }] }
       }),
       journeyHtml: "", days: []
     };
@@ -1588,36 +1619,46 @@ async function renderReturnTrip(lastMatch, trip, myRun) {
     name: night.name,
     body: `<p class="muted">Bis zur spätesten Fahrzeit (${cfg().maxNightDriveTime} Uhr) reicht es nicht mehr nach Hause – Heimreise am nächsten Tag${n > 1 ? `, verteilt auf ${n} Tage` : ""}.${override ? "" : " Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen."}</p>`,
     inputId, key: lastMatch.id, override: !!override,
-    links: [{ href: generateHotelSearchLink(night.lat, night.lng), icon: "hotel", text: "Unterkünfte suchen" }]
+    links: [{ href: generateHotelSearchLink(night.lat, night.lng), icon: "hotel", text: "Unterkünfte suchen" }],
+    cost: { key: `night:${lastMatch.id}`, tile }
   });
   return { tileBody, journeyHtml, days };
 }
 
 // ---------- Timeline-Bausteine ----------
-function driveItemHtml({ title, dep, durationMin, arr, arrLabel = "Ankunft", link, extra = "" }) {
+// cost: { key, tile, legs } – Kostenbereich rechts in der Kachel (siehe costs.js)
+function costParts(cost, kind) {
+  if (!cost || typeof registerCost !== "function") return { cls: "", open: "", close: "" };
+  registerCost({ ...cost, kind });
+  return { cls: " has-cost", open: '<div class="panel-body">', close: `</div>${costCellHtml(cost.key)}` };
+}
+
+function driveItemHtml({ title, dep, durationMin, arr, arrLabel = "Ankunft", link, extra = "", cost = null, distanceKm = null }) {
+  const c = costParts(cost, "drive");
   return `
     <div class="tl-item tl-drive">
       <span class="tl-dot chip chip-sky">${icon("car")}</span>
-      <div class="tl-content drive-panel">
+      <div class="tl-content drive-panel${c.cls}">${c.open}
         <div class="panel-head">
           <div class="tl-title">${title}</div>
           <a href="${link}" target="_blank" rel="noopener" class="link-btn no-print" title="Route in Google Maps öffnen">${icon("navigation")} Google Maps</a>
         </div>
         <div class="tl-meta">
           <span>${icon("clock")} Abfahrt <strong>${dep}</strong></span>
-          <span>${icon("route")} ca. ${formatDuration(durationMin)}</span>
+          <span>${icon("route")} ca. ${formatDuration(durationMin)}${Number.isFinite(distanceKm) ? ` · ${Math.round(distanceKm).toLocaleString("de-DE")} km` : ""}</span>
           <span>${icon("map-pin")} ${arrLabel} <strong>${arr}</strong></span>
         </div>
         ${extra}
-      </div>
+      ${c.close}</div>
     </div>`;
 }
 
-function overnightItemHtml({ title, name, body = "", warning = "", inputId, key, override, links = [] }) {
+function overnightItemHtml({ title, name, body = "", warning = "", inputId, key, override, links = [], cost = null }) {
+  const c = costParts(cost, "night");
   return `
     <div class="tl-item tl-night overnight-block">
       <span class="tl-dot chip chip-violet">${icon("moon")}</span>
-      <div class="tl-content">
+      <div class="tl-content${c.cls}">${c.open}
         <div class="tl-title">${title}</div>
         <div class="tl-place">${icon("bed-double")} ${escapeHtml(name)}</div>
         ${warning}
@@ -1628,7 +1669,7 @@ function overnightItemHtml({ title, name, body = "", warning = "", inputId, key,
           ${override ? `<button class="btn btn-ghost" onclick="clearOvernightOverride('${key}')" title="Vorschlag wiederherstellen">Zurücksetzen</button>` : ''}
         </div>
         <div class="tl-actions">${links.map(l => `<a href="${l.href}" target="_blank" rel="noopener" class="link-btn${l.icon === "hotel" ? " link-violet" : ""}">${icon(l.icon)} ${l.text}</a>`).join("")}</div>
-      </div>
+      ${c.close}</div>
     </div>`;
 }
 
@@ -1654,10 +1695,12 @@ async function renderJourneyTiles(days, myRun) {
       ? bannerHtml("warning", `Mehr als ${DAILY_DRIVE_MIN / 60} Stunden Fahrzeit an diesem Tag – ggf. einen früheren Stopp wählen.`)
       : '';
 
+    const tile = `jday:${day.key}`;
     out += `
       <div class="day-tile day-tile-travel">
         <div class="day-tile-header">
           <h3>${formatDateLong(day.date)}</h3>
+          ${typeof dayTotalHtml === "function" ? dayTotalHtml(tile) : ""}
           <span class="tile-badge tile-badge-travel">${day.label || `${icon("car")} Fahrtag`}</span>
         </div>
         <div class="day-tile-body">
@@ -1665,14 +1708,16 @@ async function renderJourneyTiles(days, myRun) {
             title: day.final ? `${icon("house", "tone-green")} Fahrt nach Hause (${escapeHtml(day.to.name)})` : `Fahrt nach ${escapeHtml(day.to.name)}`,
             dep: fmtTimeTz(dep, day.fromTz || day.tz), durationMin: driveMin, arr: fmtTimeTz(arr, day.tz), arrLabel: day.final ? "Zuhause ca." : "Ankunft ca.",
             link: generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng),
-            extra: longWarning
+            extra: longWarning, distanceKm: leg.distanceKm,
+            cost: { key: `drive:${day.key}`, tile, legs: [{ from: day.from, to: day.to, route: leg }] }
           })}
           ${day.final ? "" : overnightItemHtml({
             title: "Übernachtung",
             name: day.to.name,
             body: day.override ? "" : `<p class="muted">Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen. Bei anderer Adresse rechnen die Folgetage ab dort neu.</p>`,
             inputId, key: day.key, override: day.override,
-            links: [{ href: generateHotelSearchLink(day.to.lat, day.to.lng), icon: "hotel", text: "Unterkünfte suchen" }]
+            links: [{ href: generateHotelSearchLink(day.to.lat, day.to.lng), icon: "hotel", text: "Unterkünfte suchen" }],
+            cost: { key: `night:${day.key}`, tile }
           })}
         </div>
       </div>
@@ -2739,7 +2784,7 @@ async function calculateRoute() {
 
     // Alternativen auch im Trip-Objekt ablegen (inkl. Stand der Einstellungen für den Veraltet-Hinweis)
     trip.plans = currentPlans;
-    trip.plansSettingsKey = JSON.stringify(cfg());
+    trip.plansSettingsKey = planSettingsKey();
 
     let idx = 0;
     if (trip.selectedPlanSignature) {
@@ -2778,6 +2823,7 @@ function choosePlan(delta) {
 
 async function renderCurrentPlan() {
   applyFrozenUi();
+  if (typeof beginCostRender === "function") beginCostRender(null);
   const trip = getActiveTrip();
   if (!trip || !currentPlans || currentPlans.length === 0) return;
   const plan = currentPlans[currentPlanIndex];
@@ -2795,7 +2841,7 @@ function renderPlanSwitcher(plan) {
   if (!el) return;
 
   const trip = getActiveTrip();
-  const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== JSON.stringify(cfg())
+  const stale = trip && trip.plansSettingsKey && trip.plansSettingsKey !== planSettingsKey()
     ? bannerHtml("warning", 'Die Einstellungen wurden seit der letzten Berechnung geändert. Dieser Plan ist möglicherweise veraltet – bitte „Route berechnen“ erneut ausführen.')
     : '';
 
@@ -2854,17 +2900,20 @@ function planStatsHtml(plan) {
     ticketTotal > 0 ? pill("green", "ticket-check", `<strong>${plan.purchasedCount || 0}/${ticketTotal}</strong> mit Tickets`) : "",
     pill("amber", "trophy", `Ø <strong>${averageScore}</strong>/100`, "Durchschnittlicher Groundhopper Score"),
     plan.optimizationMode === "balanced" ? pill("blue", "scale", `<strong>${balanced}</strong>/100`, "Ausgewogen-Wert") : "",
-    pill("sky", "car", `ca. <strong>${formatDuration(plan.totalTravelMin)}</strong>`, "Gesamtfahrzeit"),
+    pill("sky", "car", `ca. <strong>${formatDuration(plan.totalTravelMin)}</strong><span id="planKm"></span>`, "Gesamtfahrzeit"),
     plan.infeasibleNights > 0 ? pill("red", "triangle-alert", `${plan.infeasibleNights} Nacht/Nächte nicht machbar`)
       : plan.tightNights > 0 ? pill("amber", "moon", `${plan.tightNights} enge Nachtfahrt(en)`) : ""
   ].filter(Boolean).join("");
-  return `<div class="plan-stats">${pills}</div><div class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</div>`;
+  return `<div class="plan-stats">${pills}<span class="stat-pill stat-violet" id="planCostPill" hidden></span></div>
+    <details class="cost-summary" id="planCostSummary" hidden><summary>Kostenübersicht</summary><table class="cost-table"></table></details>
+    <div class="optimization-mode-label">Berechnung: ${optimizationModeLabel(plan.optimizationMode)}</div>`;
 }
 
 async function renderDayTiles(plan, trip) {
   const timelineEl = document.getElementById("timeline");
   const droppedEl = document.getElementById("droppedSection");
   const myRun = ++renderRunId;
+  if (typeof beginCostRender === "function") beginCostRender(myRun);
   routeLayer.clearLayers();
 
   let currentLoc = { lat: trip.startAddress.lat, lng: trip.startAddress.lng, name: trip.startAddress.address };
@@ -2948,12 +2997,14 @@ async function renderDayTiles(plan, trip) {
       tileBody += driveItemHtml({
         title: `Fahrt nach ${escapeHtml(match.stadium)}`,
         dep: depPrefix + fmtTimeTz(departureTime, currentTz), durationMin: osrm.durationMin, arr: fmtTimeTz(targetArrival, tz),
-        arrLabel: "Am Stadion", link: deeplink
+        arrLabel: "Am Stadion", link: deeplink, distanceKm: osrm.distanceKm,
+        cost: { key: `drive:${match.id}`, tile: `day:${dc.date}`, legs: [{ from: { ...currentLoc }, to: match, route: osrm }] }
       });
+      const mc = costParts({ key: `match:${match.id}`, tile: `day:${dc.date}` }, "match");
       tileBody += `
         <div class="tl-item tl-match match-item">
           <span class="tl-dot chip chip-green">${icon("goal")}</span>
-          <div class="tl-content match-panel">
+          <div class="tl-content match-panel${mc.cls}">${mc.open}
             <div class="match-panel-head">
               <div class="match-teams">
                 ${crestImg(match.homeLogo, match.home)}
@@ -2973,7 +3024,7 @@ async function renderDayTiles(plan, trip) {
               ${typeof briefingButtonHtml === "function" ? briefingButtonHtml(match) : ""}
               ${match.clubWebsite ? websiteLinkHtml(match, "link-btn") : ""}
             </div>
-          </div>
+          ${mc.close}</div>
         </div>
       `;
 
@@ -2999,11 +3050,13 @@ async function renderDayTiles(plan, trip) {
         ? { lat: override.lat, lng: override.lng, name: override.address }
         : { lat: opPlan.overnightPoint.lat, lng: opPlan.overnightPoint.lng, name: opPlan.overnightPoint.suggestedName };
 
-      // Abendfahrt zum Übernachtungsort auf der Karte einzeichnen
+      // Abendfahrt zum Übernachtungsort auf der Karte einzeichnen (Sprit zählt zur Übernachtung)
+      let eveningLeg = null;
       if (overnightLoc.lat !== lastMatch.lat || overnightLoc.lng !== lastMatch.lng) {
         const evening = await getCachedRoute(lastMatch.lat, lastMatch.lng, overnightLoc.lat, overnightLoc.lng);
         if (myRun !== renderRunId) return;
         if (evening.geometry) L.geoJSON(evening.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
+        eveningLeg = { from: lastMatch, to: overnightLoc, route: evening };
       }
 
       // Freie Tage zwischen den Spielen: Anreise auf Fahrtage mit Zwischenstopps verteilen
@@ -3049,7 +3102,8 @@ async function renderDayTiles(plan, trip) {
           { href: legDeeplink1, icon: "navigation", text: "Zur Übernachtung" },
           { href: hotelLink, icon: "hotel", text: "Unterkünfte suchen" },
           { href: legDeeplink2, icon: "navigation", text: drivingDays.length ? "Weiter zum ersten Stopp" : "Weiter zum nächsten Stadion" }
-        ]
+        ],
+        cost: { key: `night:${lastMatch.id}`, tile: `day:${dc.date}`, legs: eveningLeg ? [eveningLeg] : [] }
       });
 
       L.marker([overnightLoc.lat, overnightLoc.lng], { icon: pinIcon("night") })
@@ -3061,7 +3115,7 @@ async function renderDayTiles(plan, trip) {
         : { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
       currentTz = drivingDays.length ? drivingDays[drivingDays.length - 1].tz : matchTz(lastMatch);
     } else if (!nextDc && dc.chain.length > 0 && cfg().returnHome !== false) {
-      const ret = await renderReturnTrip(dc.chain[dc.chain.length - 1], trip, myRun);
+      const ret = await renderReturnTrip(dc.chain[dc.chain.length - 1], trip, myRun, `day:${dc.date}`);
       if (ret === null) return;
       tileBody += ret.tileBody;
       journeyHtml = ret.journeyHtml;
@@ -3072,6 +3126,7 @@ async function renderDayTiles(plan, trip) {
       <div class="day-tile">
         <div class="day-tile-header">
           <h3>${dateLabel}</h3>
+          ${typeof dayTotalHtml === "function" ? dayTotalHtml(`day:${dc.date}`) : ""}
           ${changedBadge}
         </div>
         <div class="day-tile-body">${tileBody}</div>
@@ -3085,6 +3140,7 @@ async function renderDayTiles(plan, trip) {
     ? bannerHtml("warning", "Der Routing-Dienst war nicht erreichbar – einige Fahrzeiten sind geschätzt (Luftlinie × 1,3, ca. 75 km/h). Bitte später neu berechnen.")
     : '';
   timelineEl.innerHTML = routingWarning + (html || `<div class="empty-state">${icon("calendar", "tone-amber")}<p>Kein Spiel konnte zeitlich eingeplant werden.</p></div>`);
+  if (typeof finishCostRender === "function") finishCostRender(myRun);
 
   // Spiele ohne Tickets sind nicht Teil der Berechnung; sie werden separat aufgeführt.
   const visibleDropped = allDropped.filter(dd => !hasNoTickets(dd.match));
@@ -3137,6 +3193,7 @@ function toggleSettingsModal() {
   updateWeightShares();
   if (typeof loadAiSettingsIntoForm === "function") loadAiSettingsIntoForm();
   if (typeof loadFootballKeyIntoForm === "function") loadFootballKeyIntoForm();
+  if (typeof loadCostSettingsIntoForm === "function") loadCostSettingsIntoForm();
   modal.style.display = "flex";
   modal.querySelector(".modal-body").scrollTop = 0;
 }
@@ -3160,6 +3217,7 @@ document.addEventListener("keydown", e => {
 function saveSettings() {
   if (typeof saveAiSettingsFromForm === "function") saveAiSettingsFromForm(); // gerätelokal, nicht im Trip
   if (typeof saveFootballKeyFromForm === "function") saveFootballKeyFromForm();
+  if (typeof saveCostSettingsFromForm === "function") saveCostSettingsFromForm();
   const settings = cfg(); // Einstellungen des aktiven Trips
   const num = (id, fallback) => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) && v >= 0 ? v : fallback; };
   const time = (id, fallback) => document.getElementById(id).value || fallback;
@@ -3180,6 +3238,7 @@ function saveSettings() {
 
   saveLocalStorage();
   if (currentPlans && currentPlans[currentPlanIndex]) renderPlanSwitcher(currentPlans[currentPlanIndex]);
+  if (typeof refreshCosts === "function") refreshCosts();
   toggleSettingsModal();
 }
 
