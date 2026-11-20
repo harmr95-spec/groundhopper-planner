@@ -15,7 +15,11 @@
   const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
   const PAUSE_BETWEEN_REQUESTS_MS = 1500;  // schont das kostenlose Kontingent
   const MAX_RETRY_WAIT_MS = 65000;         // so lange wird bei "Kontingent kurz erschöpft" max. gewartet
-  const IDLE_TIMEOUT_MS = 90000;           // Abbruch, wenn so lange gar keine Daten mehr kommen
+  const IDLE_TIMEOUT_MS = 60000;           // Abbruch (bzw. Ausweichen), wenn so lange gar keine Daten mehr kommen
+  // Ausweich-Modelle, falls das gewünschte überlastet ist, fehlt oder hängt (Reihenfolge = Priorität)
+  const FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
+  const OVERLOAD_RETRY_WAIT_MS = 4000;     // kurze Pause, bevor dasselbe Modell noch einmal versucht wird
+  let lastWorkingModel = null;             // zuletzt erfolgreiches Modell (nur für diese Sitzung)
   const TOTAL_TIMEOUT_MS = 360000;         // absolute Obergrenze pro One-Pager
   let thinkingUnsupported = false;         // ältere Modelle kennen thinkingLevel nicht
 
@@ -70,7 +74,7 @@
     setKeyStatus("Teste Verbindung …", "busy");
     const started = Date.now();
     try {
-      await callGemini({ apiKey, model }, "Antworte nur mit dem Wort OK.", null, { json: false, retries: 0 });
+      await callGemini({ apiKey, model }, "Antworte nur mit dem Wort OK.", null, { json: false, retries: 0, fallback: false });
       setKeyStatus(`Verbindung klappt (Modell: ${model}, Antwort nach ${((Date.now() - started) / 1000).toFixed(1).replace(".", ",")} s).`, "ok");
     } catch (err) {
       setKeyStatus(errorText(err), "error");
@@ -78,9 +82,11 @@
   };
 
   // ---------- Gemini-Aufruf ----------
+  // kind: "overloaded" (ausgelastet), "timeout" (hängt), "model_missing" -> anderes Modell versuchen; sonst null
   class GeminiError extends Error {
-    constructor(message, diag = null) { super(message); this.diag = diag; }
+    constructor(message, diag = null, kind = null) { super(message); this.diag = diag; this.kind = kind; }
   }
+  const OVERLOAD_RE = /high demand|overloaded|unavailable|try again later|capacity/i;
 
   // Diagnose eines Aufrufs – wird live angezeigt und bei Fehlern an die Meldung gehängt
   function newDiag(model) {
@@ -99,21 +105,46 @@
   function connectionError(err, reason, started) {
     console.error("Gemini-Anfrage fehlgeschlagen:", err);
     const secs = Math.round((Date.now() - started) / 1000);
-    if (reason === "idle") return new GeminiError(`Gemini hat ${secs} Sekunden lang keine Daten mehr geschickt. Bitte erneut versuchen oder in den Einstellungen ein schnelleres Modell (z. B. ein „flash-lite“-Modell) eintragen.`);
-    if (reason === "total") return new GeminiError(`Abbruch nach ${secs} Sekunden – die Antwort dauert zu lange. Bitte ein schnelleres Modell eintragen.`);
+    if (reason === "idle") return new GeminiError(`Gemini hat ${secs} Sekunden lang keine Daten mehr geschickt.`, null, "timeout");
+    if (reason === "total") return new GeminiError(`Abbruch nach ${secs} Sekunden – die Antwort dauert zu lange.`, null, "timeout");
     if (typeof navigator !== "undefined" && navigator.onLine === false) return new GeminiError("Keine Internetverbindung.");
     return new GeminiError("Die Verbindung zu Gemini wurde blockiert (generativelanguage.googleapis.com). Häufige Ursache: ein Werbe-/Tracking-Blocker oder eine Firewall – bitte für diese Seite deaktivieren und erneut versuchen.");
   }
 
   // Ruft Gemini im Streaming-Modus auf (Server-Sent Events) und liefert den kompletten Antworttext.
   // onProgress(diag) wird bei jedem empfangenen Stück aufgerufen.
-  async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null } = {}) {
-    try {
-      return await callGeminiInner(ai, prompt, systemText, { json, retries, onProgress });
-    } catch (err) {
-      if (err instanceof GeminiError && err.diag) console.warn("Gemini-Diagnose:", diagText(err.diag), err.diag.sample);
-      throw err;
+  // Bei Überlastung: dasselbe Modell nach kurzer Pause noch einmal, dann die Ausweich-Modelle.
+  // onModel(modell, istAusweich) meldet, welches Modell gerade versucht wird. Liefert { text, model }.
+  async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null, onModel = null, fallback = true } = {}) {
+    const order = fallback
+      ? [...new Set([lastWorkingModel, ai.model, ...FALLBACK_MODELS].filter(Boolean))]
+      : [ai.model];
+    const tried = [];
+    let lastErr = null;
+    for (const model of order) {
+      for (let round = 0; round < 2; round++) {
+        if (onModel) onModel(model, model !== ai.model);
+        try {
+          const text = await callGeminiInner({ ...ai, model }, prompt, systemText, { json, retries, onProgress });
+          if (fallback) lastWorkingModel = model;
+          return { text, model };
+        } catch (err) {
+          if (err instanceof GeminiError && err.diag) console.warn("Gemini-Diagnose:", diagText(err.diag), err.diag.sample);
+          lastErr = err;
+          if (!(err instanceof GeminiError) || !fallback) throw err;
+          if (err.kind === "overloaded" && round === 0) {
+            await sleep(OVERLOAD_RETRY_WAIT_MS); // kurze Spitze? Einmal neu versuchen
+            continue;
+          }
+          if (["overloaded", "timeout", "model_missing"].includes(err.kind)) break; // nächstes Modell
+          throw err; // z. B. Schlüssel ungültig, Kontingent aufgebraucht
+        }
+      }
+      tried.push(model);
+      if (lastWorkingModel === model) lastWorkingModel = null;
     }
+    if (lastErr && lastErr.kind === "model_missing" && tried.length === 1) throw lastErr;
+    throw new GeminiError(`Alle Gemini-Modelle sind gerade ausgelastet (versucht: ${tried.join(", ")}). Das liegt bei Google und ist meist nach ein paar Minuten vorbei – bitte später erneut versuchen.`, lastErr && lastErr.diag);
   }
 
   async function callGeminiInner(ai, prompt, systemText, { json, retries, onProgress }) {
@@ -173,8 +204,8 @@
           }
           if (res.status === 400 && /api key/i.test(msg)) throw new GeminiError("Der Gemini-Schlüssel ist ungültig. Bitte in den Einstellungen prüfen.");
           if (res.status === 403) throw new GeminiError("Zugriff verweigert – ist der Schlüssel richtig und die Gemini API aktiviert?");
-          if (res.status === 404) throw new GeminiError(`Das Modell „${ai.model}“ wurde nicht gefunden. Bitte in den Einstellungen ein anderes Modell eintragen.`);
-          if (res.status >= 500 && attempt < retries) { await sleep(3000); continue; }
+          if (res.status === 404) throw new GeminiError(`Das Modell „${ai.model}“ wurde nicht gefunden. Bitte in den Einstellungen ein anderes Modell eintragen.`, diag, "model_missing");
+          if (res.status >= 500 || OVERLOAD_RE.test(msg)) throw new GeminiError(`Das Modell ${ai.model} ist gerade ausgelastet.`, diag, "overloaded");
           throw new GeminiError(`Gemini-Fehler: ${msg}`, diag);
         }
 
@@ -189,7 +220,11 @@
           try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
           diag.events++;
           if (diag.sample.length < 600) diag.sample += line.slice(0, 600 - diag.sample.length);
-          if (ev.error) throw new GeminiError(`Gemini-Fehler: ${ev.error.message || "unbekannt"}`, diag);
+          if (ev.error) {
+            const m = ev.error.message || "unbekannt";
+            const overloaded = ev.error.code >= 500 || OVERLOAD_RE.test(m) || ev.error.status === "UNAVAILABLE";
+            throw new GeminiError(overloaded ? `Das Modell ${ai.model} ist gerade ausgelastet.` : `Gemini-Fehler: ${m}`, diag, overloaded ? "overloaded" : null);
+          }
           if (ev.promptFeedback && ev.promptFeedback.blockReason) blockReason = ev.promptFeedback.blockReason;
           const cand = ev.candidates && ev.candidates[0];
           if (!cand) return;
@@ -324,12 +359,13 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     busy = { matchId: match.id, started: Date.now(), diag: null };
     updateBusyIndicators();
     try {
-      const text = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
-        onProgress: diag => { if (busy) { busy.diag = diag; updateBusyIndicators(); } }
+      const { text, model } = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
+        onProgress: diag => { if (busy) { busy.diag = diag; updateBusyIndicators(); } },
+        onModel: (m, isFallback) => { if (busy) { busy.model = m; busy.fallback = isFallback; busy.diag = null; updateBusyIndicators(); } }
       });
       const content = sanitizeBriefingContent(parseJsonLoose(text));
       if (!trip.briefings) trip.briefings = {};
-      trip.briefings[match.id] = { createdAt: new Date().toISOString(), model: ai.model, content };
+      trip.briefings[match.id] = { createdAt: new Date().toISOString(), model, content };
       saveLocalStorage();
     } finally {
       busy = null;
@@ -342,10 +378,11 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     const d = busy.diag;
     const secs = `${Math.round((Date.now() - busy.started) / 1000)} s`;
     const k = n => (n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "k" : String(n));
-    if (!d || d.headersAfter === null) return `Warte auf Gemini … ${secs}`;
+    const via = busy.fallback ? ` (weiche aus auf ${busy.model})` : "";
+    if (!d || d.headersAfter === null) return `Warte auf Gemini … ${secs}${via}`;
     if (d.textChars) return `Schreibt … ${k(d.textChars)} Zeichen`;
-    if (d.thoughtChars) return `Denkt nach … ${secs} · ${k(d.thoughtChars)} Zeichen Gedanken`;
-    return `Verbunden, wartet auf Antwort … ${secs}`;
+    if (d.thoughtChars) return `Denkt nach … ${secs} · ${k(d.thoughtChars)} Zeichen Gedanken${via}`;
+    return `Verbunden, wartet auf Antwort … ${secs}${via}`;
   }
   function updateBusyIndicators() {
     if (!busy) return;
