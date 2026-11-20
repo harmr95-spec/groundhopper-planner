@@ -2,8 +2,9 @@
    KI-One-Pager pro Spiel (Google Gemini)
    - Der API-Schlüssel wird NUR im Browser gespeichert (localStorage), nie im
      Trip, nie im Export und nie im Code.
-   - "Trip bestätigen" erzeugt für alle Spiele der gewählten Alternative einen
-     One-Pager (Stadion, Vereine, Begegnung & Historie, Groundhopper-Tipps).
+   - "Trip bestätigen" schaltet die One-Pager frei; erstellt wird pro Spiel
+     (Button am Spiel) oder auf Wunsch für alle fehlenden nacheinander.
+   - Antworten werden gestreamt: Fortschritt live, Abbruch nur bei Funkstille.
    - Die One-Pager werden im Trip gespeichert (trip.briefings[matchId]).
    ========================================================================= */
 (function () {
@@ -14,10 +15,13 @@
   const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
   const PAUSE_BETWEEN_REQUESTS_MS = 1500;  // schont das kostenlose Kontingent
   const MAX_RETRY_WAIT_MS = 65000;         // so lange wird bei "Kontingent kurz erschöpft" max. gewartet
-  const REQUEST_TIMEOUT_MS = 180000;       // neuere Modelle "denken" vor der Antwort – großzügiges Zeitlimit
+  const IDLE_TIMEOUT_MS = 90000;           // Abbruch, wenn so lange gar keine Daten mehr kommen
+  const TOTAL_TIMEOUT_MS = 360000;         // absolute Obergrenze pro One-Pager
   let thinkingUnsupported = false;         // ältere Modelle kennen thinkingLevel nicht
 
-  let progress = null; // { done, total, current } während der Erstellung
+  // Laufende Erstellung: { matchId, chars, started } bzw. Sammel-Lauf { done, total }
+  let busy = null;
+  let batch = null;
 
   // ---------- KI-Einstellungen (gerätelokal, gelten für alle Trips) ----------
   function aiSettings() {
@@ -75,7 +79,18 @@
   // ---------- Gemini-Aufruf ----------
   class GeminiError extends Error {}
 
-  async function callGemini(ai, prompt, systemText, { json = true, retries = 1 } = {}) {
+  function connectionError(err, reason, started) {
+    console.error("Gemini-Anfrage fehlgeschlagen:", err);
+    const secs = Math.round((Date.now() - started) / 1000);
+    if (reason === "idle") return new GeminiError(`Gemini hat ${secs} Sekunden lang keine Daten mehr geschickt. Bitte erneut versuchen oder in den Einstellungen ein schnelleres Modell (z. B. ein „flash-lite“-Modell) eintragen.`);
+    if (reason === "total") return new GeminiError(`Abbruch nach ${secs} Sekunden – die Antwort dauert zu lange. Bitte ein schnelleres Modell eintragen.`);
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return new GeminiError("Keine Internetverbindung.");
+    return new GeminiError("Die Verbindung zu Gemini wurde blockiert (generativelanguage.googleapis.com). Häufige Ursache: ein Werbe-/Tracking-Blocker oder eine Firewall – bitte für diese Seite deaktivieren und erneut versuchen.");
+  }
+
+  // Ruft Gemini im Streaming-Modus auf (Server-Sent Events) und liefert den kompletten Antworttext.
+  // onProgress(zeichen) wird bei jedem empfangenen Stück aufgerufen.
+  async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null } = {}) {
     const buildBody = () => {
       const generationConfig = { temperature: 0.4, ...(json ? { responseMimeType: "application/json" } : {}) };
       // Kurz "nachdenken" lassen: deutlich schnellere Antworten bei Fakten-Texten
@@ -86,55 +101,96 @@
     };
 
     for (let attempt = 0; ; attempt++) {
-      let res;
+      const ctrl = new AbortController();
       const started = Date.now();
+      let reason = null, idleTimer = null;
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { reason = "idle"; ctrl.abort(); }, IDLE_TIMEOUT_MS);
+      };
+      const totalTimer = setTimeout(() => { reason = "total"; ctrl.abort(); }, TOTAL_TIMEOUT_MS);
+      armIdle();
+
       try {
-        res = await fetchWithTimeout(`${API_BASE}${encodeURIComponent(ai.model)}:generateContent`, REQUEST_TIMEOUT_MS, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": ai.apiKey },
-          body: buildBody()
-        });
-      } catch (err) {
-        console.error("Gemini-Anfrage fehlgeschlagen:", err);
-        if (err && err.name === "AbortError") {
-          throw new GeminiError(`Gemini hat nach ${Math.round((Date.now() - started) / 1000)} Sekunden nicht geantwortet. Bitte erneut versuchen oder in den Einstellungen ein schnelleres Modell (z. B. ein „flash-lite“-Modell) eintragen.`);
+        let res;
+        try {
+          res = await fetch(`${API_BASE}${encodeURIComponent(ai.model)}:streamGenerateContent?alt=sse`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": ai.apiKey },
+            body: buildBody(),
+            signal: ctrl.signal
+          });
+        } catch (err) {
+          throw connectionError(err, reason, started);
         }
-        if (typeof navigator !== "undefined" && navigator.onLine === false) {
-          throw new GeminiError("Keine Internetverbindung.");
+
+        if (!res.ok) {
+          let data = null;
+          try { data = JSON.parse(await res.text()); if (Array.isArray(data)) data = data[0]; } catch (e) { /* kein JSON */ }
+          const msg = (data && data.error && data.error.message) || `HTTP ${res.status}`;
+          // Modell kennt die Denk-Einstellung nicht -> ohne erneut versuchen
+          if (res.status === 400 && !thinkingUnsupported && /thinking/i.test(msg)) {
+            thinkingUnsupported = true;
+            attempt--;
+            continue;
+          }
+          if (res.status === 429) {
+            const wait = retryDelayMs(data);
+            if (attempt < retries && wait <= MAX_RETRY_WAIT_MS) { await sleep(wait); continue; }
+            throw new GeminiError("Das kostenlose Gemini-Kontingent ist gerade aufgebraucht. Bitte später erneut versuchen.");
+          }
+          if (res.status === 400 && /api key/i.test(msg)) throw new GeminiError("Der Gemini-Schlüssel ist ungültig. Bitte in den Einstellungen prüfen.");
+          if (res.status === 403) throw new GeminiError("Zugriff verweigert – ist der Schlüssel richtig und die Gemini API aktiviert?");
+          if (res.status === 404) throw new GeminiError(`Das Modell „${ai.model}“ wurde nicht gefunden. Bitte in den Einstellungen ein anderes Modell eintragen.`);
+          if (res.status >= 500 && attempt < retries) { await sleep(3000); continue; }
+          throw new GeminiError(`Gemini-Fehler: ${msg}`);
         }
-        throw new GeminiError("Die Verbindung zu Gemini wurde blockiert (generativelanguage.googleapis.com). Häufige Ursache: ein Werbe-/Tracking-Blocker oder eine Firewall – bitte für diese Seite deaktivieren und erneut versuchen.");
-      }
-      let data = null;
-      try { data = await res.json(); } catch (e) { /* kein JSON */ }
 
-      // Modell kennt die Denk-Einstellung nicht -> ohne erneut versuchen
-      if (res.status === 400 && !thinkingUnsupported && /thinking/i.test((data && data.error && data.error.message) || "")) {
-        thinkingUnsupported = true;
-        attempt--;
-        continue;
-      }
+        // Stream lesen: Zeilen "data: {...}"
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "", text = "", finishReason = null, blockReason = null;
+        const handleLine = line => {
+          line = line.trim();
+          if (!line.startsWith("data:")) return;
+          let ev;
+          try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
+          if (ev.error) throw new GeminiError(`Gemini-Fehler: ${ev.error.message || "unbekannt"}`);
+          if (ev.promptFeedback && ev.promptFeedback.blockReason) blockReason = ev.promptFeedback.blockReason;
+          const cand = ev.candidates && ev.candidates[0];
+          if (!cand) return;
+          const parts = (cand.content && cand.content.parts) || [];
+          parts.forEach(p => { if (!p.thought && p.text) text += p.text; });
+          if (cand.finishReason) finishReason = cand.finishReason;
+        };
+        for (;;) {
+          let chunk;
+          try { chunk = await reader.read(); } catch (err) { throw connectionError(err, reason, started); }
+          if (chunk.done) break;
+          armIdle();
+          buffer += decoder.decode(chunk.value, { stream: true });
+          let nl;
+          while ((nl = buffer.indexOf("\n")) >= 0) {
+            handleLine(buffer.slice(0, nl));
+            buffer = buffer.slice(nl + 1);
+          }
+          if (onProgress) onProgress(text.length);
+        }
+        handleLine(buffer);
 
-      if (res.ok) {
-        const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-        const text = parts ? parts.filter(p => !p.thought).map(p => p.text || "").join("") : "";
-        if (!text) throw new GeminiError("Gemini hat keine Antwort geliefert (evtl. vom Inhaltsfilter blockiert).");
+        if (!text) {
+          throw new GeminiError(blockReason
+            ? "Gemini hat die Anfrage blockiert (Inhaltsfilter)."
+            : "Gemini hat keine Antwort geliefert. Bitte erneut versuchen.");
+        }
+        if (finishReason === "MAX_TOKENS" && json) {
+          try { JSON.parse(text); } catch (e) { throw new GeminiError("Die Antwort von Gemini wurde abgeschnitten. Bitte erneut versuchen."); }
+        }
         return text;
+      } finally {
+        clearTimeout(idleTimer);
+        clearTimeout(totalTimer);
       }
-
-      const msg = (data && data.error && data.error.message) || `HTTP ${res.status}`;
-      if (res.status === 429) {
-        const wait = retryDelayMs(data);
-        if (attempt < retries && wait <= MAX_RETRY_WAIT_MS) {
-          await sleep(wait);
-          continue;
-        }
-        throw new GeminiError("Das kostenlose Gemini-Kontingent ist gerade aufgebraucht. Bitte später erneut versuchen.");
-      }
-      if (res.status === 400 && /api key/i.test(msg)) throw new GeminiError("Der Gemini-Schlüssel ist ungültig. Bitte in den Einstellungen prüfen.");
-      if (res.status === 403) throw new GeminiError("Zugriff verweigert – ist der Schlüssel richtig und die Gemini API aktiviert?");
-      if (res.status === 404) throw new GeminiError(`Das Modell „${ai.model}“ wurde nicht gefunden. Bitte in den Einstellungen ein anderes Modell eintragen.`);
-      if (res.status >= 500 && attempt < retries) { await sleep(3000); continue; }
-      throw new GeminiError(`Gemini-Fehler: ${msg}`);
     }
   }
 
@@ -225,22 +281,55 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   }
 
   async function generateBriefing(trip, match, ai) {
-    const text = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT);
-    const content = sanitizeBriefingContent(parseJsonLoose(text));
-    if (!trip.briefings) trip.briefings = {};
-    trip.briefings[match.id] = { createdAt: new Date().toISOString(), model: ai.model, content };
-    saveLocalStorage();
+    busy = { matchId: match.id, chars: 0, started: Date.now() };
+    updateBusyIndicators();
+    try {
+      const text = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
+        onProgress: chars => { if (busy) { busy.chars = chars; updateBusyIndicators(); } }
+      });
+      const content = sanitizeBriefingContent(parseJsonLoose(text));
+      if (!trip.briefings) trip.briefings = {};
+      trip.briefings[match.id] = { createdAt: new Date().toISOString(), model: ai.model, content };
+      saveLocalStorage();
+    } finally {
+      busy = null;
+    }
   }
+
+  // Fortschritt live in Buttons/Modal schreiben, ohne alles neu zu zeichnen
+  function busyLabel() {
+    if (!busy) return "";
+    if (!busy.chars) return `Denkt nach … ${Math.round((Date.now() - busy.started) / 1000)} s`;
+    return `Schreibt … ${busy.chars >= 1000 ? (busy.chars / 1000).toFixed(1).replace(".", ",") + "k" : busy.chars} Zeichen`;
+  }
+  function updateBusyIndicators() {
+    if (!busy) return;
+    document.querySelectorAll(`[data-brief-progress="${busy.matchId}"]`).forEach(el => { el.textContent = busyLabel(); });
+  }
+  setInterval(updateBusyIndicators, 1000); // Sekunden beim Nachdenken weiterzählen
+
+  function requireKey() {
+    const ai = aiSettings();
+    if (ai.apiKey) return ai;
+    pendingPlanMessage = { type: "warning", text: "Für die One-Pager wird ein kostenloser Gemini-Schlüssel benötigt. Bitte in den Einstellungen (Zahnrad am Trip) eintragen." };
+    renderCurrentPlan();
+    toggleSettingsModal();
+    return null;
+  }
+  const errorText = err => (err instanceof GeminiError ? err.message : "Beim Erstellen des One-Pagers ist ein Fehler aufgetreten.");
 
   // ---------- Trip bestätigen ----------
   const activePlan = () => (currentPlans && currentPlans[currentPlanIndex]) || null;
 
-  window.confirmTrip = async function () {
+  window.confirmTrip = function () {
     const trip = getActiveTrip(), plan = activePlan();
     if (!trip || !plan) return;
     trip.confirmed = { at: new Date().toISOString(), planSignature: plan.signature };
     saveLocalStorage();
-    await generateMissingBriefings();
+    pendingPlanMessage = aiSettings().apiKey
+      ? { type: "success", text: "Trip bestätigt. Am jeweiligen Spiel kannst du jetzt den One-Pager erstellen lassen." }
+      : { type: "info", text: "Trip bestätigt. Für die One-Pager bitte noch einen kostenlosen Gemini-Schlüssel in den Einstellungen eintragen." };
+    renderCurrentPlan();
   };
 
   window.unconfirmTrip = function () {
@@ -251,36 +340,52 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     renderCurrentPlan();
   };
 
-  // Erstellt One-Pager für alle Spiele der aktiven Alternative, die noch keinen haben.
+  // One-Pager für ein einzelnes Spiel erstellen (Button am Spiel)
+  window.createBriefing = async function (matchId) {
+    const trip = getActiveTrip();
+    const match = trip && trip.matches.find(m => m.id === matchId);
+    if (!match || busy) return;
+    const ai = requireKey();
+    if (!ai) return;
+    const run = generateBriefing(trip, match, ai);
+    renderCurrentPlan(); // Button zeigt Fortschritt
+    try {
+      await run;
+      pendingPlanMessage = { type: "success", text: `One-Pager für ${shortMatchLabel(match)} ist fertig.` };
+      await renderCurrentPlan();
+      openBriefing(matchId);
+    } catch (err) {
+      console.error("One-Pager-Fehler:", err);
+      pendingPlanMessage = { type: "danger", text: `${shortMatchLabel(match)}: ${errorText(err)}` };
+      renderCurrentPlan();
+    }
+  };
+
+  // Alle fehlenden One-Pager der aktiven Alternative nacheinander erstellen
   window.generateMissingBriefings = async function () {
     const trip = getActiveTrip(), plan = activePlan();
-    if (!trip || !plan || progress) return;
-    const ai = aiSettings();
-    if (!ai.apiKey) {
-      pendingPlanMessage = { type: "warning", text: "Für die One-Pager wird ein kostenloser Gemini-Schlüssel benötigt. Bitte in den Einstellungen (Zahnrad am Trip) eintragen." };
-      renderCurrentPlan();
-      toggleSettingsModal();
-      return;
-    }
+    if (!trip || !plan || busy || batch) return;
+    const ai = requireKey();
+    if (!ai) return;
     const todo = plan.selected.filter(m => !(trip.briefings && trip.briefings[m.id]));
-    if (!todo.length) { renderCurrentPlan(); return; }
+    if (!todo.length) return;
 
-    progress = { done: 0, total: todo.length, current: "" };
+    batch = { done: 0, total: todo.length };
     let error = null;
     try {
       for (const m of todo) {
-        progress.current = shortMatchLabel(m);
-        renderPlanSwitcher(plan);
-        await generateBriefing(trip, m, ai);
-        progress.done++;
-        if (progress.done < progress.total) await sleep(PAUSE_BETWEEN_REQUESTS_MS);
+        const run = generateBriefing(trip, m, ai);
+        renderCurrentPlan();
+        await run;
+        batch.done++;
+        if (batch.done < batch.total) await sleep(PAUSE_BETWEEN_REQUESTS_MS);
       }
     } catch (err) {
       console.error("One-Pager-Fehler:", err);
-      error = err instanceof GeminiError ? err.message : "Beim Erstellen der One-Pager ist ein Fehler aufgetreten.";
+      error = errorText(err);
     }
-    const done = progress.done, total = progress.total;
-    progress = null;
+    const { done, total } = batch;
+    batch = null;
     pendingPlanMessage = error
       ? { type: "danger", text: `${error}${done ? ` (${done} von ${total} One-Pagern wurden erstellt.)` : ""}` }
       : { type: "success", text: `${done} One-Pager erstellt – zu finden am jeweiligen Spiel im Ablaufplan.` };
@@ -290,20 +395,18 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   window.regenerateBriefing = async function (matchId) {
     const trip = getActiveTrip();
     const match = trip && trip.matches.find(m => m.id === matchId);
-    if (!match || progress) return;
-    const ai = aiSettings();
-    if (!ai.apiKey) { toggleSettingsModal(); return; }
-    progress = { done: 0, total: 1, current: shortMatchLabel(match) };
-    renderBriefingModal(matchId, true);
+    if (!match || busy) return;
+    const ai = requireKey();
+    if (!ai) return;
+    const run = generateBriefing(trip, match, ai);
+    renderBriefingModal(matchId);
     try {
-      await generateBriefing(trip, match, ai);
+      await run;
     } catch (err) {
       console.error("One-Pager-Fehler:", err);
-      progress = null;
-      renderBriefingModal(matchId, false, err instanceof GeminiError ? err.message : "Unbekannter Fehler.");
+      renderBriefingModal(matchId, errorText(err));
       return;
     }
-    progress = null;
     renderBriefingModal(matchId);
     renderCurrentPlan();
   };
@@ -312,39 +415,40 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   window.confirmationHtml = function (trip) {
     const plan = activePlan();
     if (!trip || !plan) return "";
-    if (progress) {
-      return bannerHtml("info", `Erstelle One-Pager ${progress.done + 1} von ${progress.total}: ${escapeHtml(progress.current)} …`, "loader-circle")
-        .replace('class="icon', 'class="icon spin');
-    }
     if (!trip.confirmed) {
       return `<div class="confirm-bar">
-        <div class="confirm-text">${icon("sparkles", "tone-violet")} <span><strong>Passt der Plan?</strong> Bestätige den Trip – dann schreibt die KI zu jedem Spiel einen One-Pager mit Stadion, Vereinen, Historie und Tipps.</span></div>
+        <div class="confirm-text">${icon("sparkles", "tone-violet")} <span><strong>Passt der Plan?</strong> Bestätige den Trip – dann kannst du zu jedem Spiel einen KI-One-Pager mit Stadion, Vereinen, Historie und Tipps erstellen lassen.</span></div>
         <button class="btn btn-primary" onclick="confirmTrip()">${icon("badge-check")} Trip bestätigen</button>
       </div>`;
     }
     const total = plan.selected.length;
     const have = plan.selected.filter(m => trip.briefings && trip.briefings[m.id]).length;
     const date = new Date(trip.confirmed.at).toLocaleDateString("de-DE");
+    const batchInfo = batch ? ` · erstelle ${batch.done + 1} von ${batch.total} …` : "";
     return `<div class="confirm-bar confirmed">
-      <div class="confirm-text">${icon("badge-check", "tone-green")} <span><strong>Trip bestätigt</strong> am ${date} · ${icon("book-open")} ${have}/${total} One-Pager</span></div>
+      <div class="confirm-text">${icon("badge-check", "tone-green")} <span><strong>Trip bestätigt</strong> am ${date} · ${icon("book-open")} ${have}/${total} One-Pager${batchInfo}</span></div>
       <div class="confirm-actions">
-        ${have < total ? `<button class="btn btn-soft" onclick="generateMissingBriefings()">${icon("sparkles")} Fehlende erstellen</button>` : ""}
-        <button class="btn btn-ghost" onclick="unconfirmTrip()" title="Bestätigung aufheben (One-Pager bleiben erhalten)">Aufheben</button>
+        ${have < total && !batch ? `<button class="btn btn-soft" onclick="generateMissingBriefings()" ${busy ? "disabled" : ""}>${icon("sparkles")} Alle fehlenden erstellen</button>` : ""}
+        <button class="btn btn-ghost" onclick="unconfirmTrip()" title="Bestätigung aufheben (One-Pager bleiben erhalten)" ${busy ? "disabled" : ""}>Aufheben</button>
       </div>
     </div>`;
   };
 
   window.briefingButtonHtml = function (match) {
     const trip = getActiveTrip();
-    if (!trip || !(trip.briefings && trip.briefings[match.id])) return "";
-    return `<button class="link-btn link-violet" onclick="openBriefing('${match.id}')">${icon("book-open")} One-Pager</button>`;
+    if (!trip) return "";
+    if (busy && busy.matchId === match.id) {
+      return `<button class="link-btn link-violet is-busy" disabled>${icon("loader-circle", "spin")} <span data-brief-progress="${match.id}">${busyLabel()}</span></button>`;
+    }
+    if (trip.briefings && trip.briefings[match.id]) {
+      return `<button class="link-btn link-violet" onclick="openBriefing('${match.id}')">${icon("book-open")} One-Pager</button>`;
+    }
+    if (!trip.confirmed) return "";
+    return `<button class="link-btn link-violet" onclick="createBriefing('${match.id}')" ${busy ? "disabled title=\"Es wird gerade ein anderer One-Pager erstellt\"" : ""}>${icon("sparkles")} One-Pager erstellen</button>`;
   };
 
-  // Nach "Keine Tickets" in einem bestätigten Trip: One-Pager für Ersatzspiele nachziehen
-  window.afterPlanRepaired = function () {
-    const trip = getActiveTrip();
-    if (trip && trip.confirmed && aiSettings().apiKey) generateMissingBriefings();
-  };
+  // Nach "Keine Tickets": Ersatzspiele bekommen einfach den Button "One-Pager erstellen"
+  window.afterPlanRepaired = function () {};
 
   // ---------- One-Pager-Ansicht ----------
   function ensureModal() {
@@ -368,7 +472,8 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     if (el) el.style.display = "none";
   };
 
-  function renderBriefingModal(matchId, busy = false, error = "") {
+  function renderBriefingModal(matchId, error = "") {
+    const isBusy = !!(busy && busy.matchId === matchId);
     const trip = getActiveTrip();
     const match = trip && trip.matches.find(m => m.id === matchId);
     if (!match) return;
@@ -382,12 +487,12 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
       </div>
       <div class="modal-body">
         ${error ? bannerHtml("danger", escapeHtml(error)) : ""}
-        ${busy ? `<div class="empty-state loading">${icon("sparkles", "tone-violet")}<p>Gemini schreibt den One-Pager …</p></div>`
+        ${isBusy ? `<div class="empty-state loading">${icon("sparkles", "tone-violet")}<p>Gemini schreibt den One-Pager …</p><p class="muted" data-brief-progress="${match.id}">${busyLabel()}</p></div>`
           : b ? briefingHtml(match, b) : `<div class="empty-state">${icon("book-open", "tone-violet")}<p>Noch kein One-Pager vorhanden.</p></div>`}
       </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="regenerateBriefing('${match.id}')" ${busy ? "disabled" : ""}>${icon("refresh-cw")} Neu erstellen</button>
-        <button class="btn btn-primary" onclick="printBriefing('${match.id}')" ${busy || !b ? "disabled" : ""}>${icon("printer")} Drucken</button>
+        <button class="btn btn-primary" onclick="printBriefing('${match.id}')" ${isBusy || !b ? "disabled" : ""}>${icon("printer")} Drucken</button>
       </div>`;
   }
 
