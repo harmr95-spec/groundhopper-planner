@@ -32,7 +32,41 @@ function cfg() {
 }
 
 let map, markersLayer, routeLayer;
-let travelCache = new Map();
+// Fahrzeiten (Minuten) zwischen zwei Punkten – dauerhaft im Browser gespeichert (nur echte Routing-Werte).
+// Pro Eintrag nur wenige Bytes; Routenlinien für die Karte werden bewusst NICHT gespeichert (zu groß).
+const TRAVEL_STORAGE_KEY = "groundhopping_travel";
+const TRAVEL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Straßen ändern sich selten: 30 Tage gültig
+const TRAVEL_MAX_ENTRIES = 4000;                     // Obergrenze (ca. 250 KB)
+let travelCache = new Map();   // key -> Minuten
+const travelSavedAt = new Map(); // key -> Zeitstempel (Tage seit 1970), für Ablauf/Aufräumen
+let travelSaveTimer = null;
+
+function loadTravelCache() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TRAVEL_STORAGE_KEY) || "{}");
+    const minDay = Math.floor((Date.now() - TRAVEL_MAX_AGE_MS) / 86400000);
+    Object.entries(raw).forEach(([key, [min, day]]) => {
+      if (Number.isFinite(min) && day >= minDay) { travelCache.set(key, min); travelSavedAt.set(key, day); }
+    });
+  } catch (e) { /* defekt oder kein Zugriff: einfach leer starten */ }
+}
+
+function rememberTravel(key, min) {
+  travelCache.set(key, min);
+  travelSavedAt.set(key, Math.floor(Date.now() / 86400000));
+  clearTimeout(travelSaveTimer);
+  travelSaveTimer = setTimeout(saveTravelCache, 1500); // gebündelt speichern
+}
+
+function saveTravelCache() {
+  try {
+    const entries = [...travelSavedAt.entries()].sort((a, b) => b[1] - a[1]).slice(0, TRAVEL_MAX_ENTRIES);
+    const data = {};
+    entries.forEach(([key, day]) => { if (travelCache.has(key)) data[key] = [travelCache.get(key), day]; });
+    localStorage.setItem(TRAVEL_STORAGE_KEY, JSON.stringify(data));
+  } catch (e) { /* Speicher voll: Fahrzeiten sind nur ein Cache */ }
+}
+loadTravelCache();
 const routeCache = new Map();        // Routen inkl. Geometrie/Steps, nur echte OSRM-Ergebnisse
 const reverseGeoCache = new Map();   // Ortsnamen für Übernachtungspunkte
 let renderRunId = 0;                 // verwirft veraltete Renderings (Planwechsel während des Ladens)
@@ -1140,6 +1174,7 @@ function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
 
 // ---------- Bestätigte Trips sind eingefroren ----------
 // Keine Neuberechnung, kein Bearbeiten/Löschen/Hinzufügen, kein Alternativen-Wechsel, keine Übernachtungsänderung.
+// Erlaubt bleibt nur der Ticketstatus – inkl. "Keine Tickets" mit automatischer Ersatzsuche.
 function isTripFrozen(trip = getActiveTrip()) { return !!(trip && trip.confirmed); }
 
 function frozenGuard() {
@@ -1378,7 +1413,7 @@ async function getCachedTravelMin(lat1, lng1, lat2, lng2) {
   const key = travelKey(lat1, lng1, lat2, lng2);
   if (travelCache.has(key)) return travelCache.get(key);
   const result = await getOSRMRoute(lat1, lng1, lat2, lng2);
-  if (!result.estimated) travelCache.set(key, result.durationMin); // Schätzwerte nie cachen
+  if (!result.estimated) rememberTravel(key, result.durationMin); // Schätzwerte nie cachen
   return result.durationMin;
 }
 
@@ -1402,7 +1437,7 @@ async function prefetchTravelMatrix(points) {
     if (data.code !== "Ok" || !Array.isArray(data.durations)) return;
     unique.forEach((a, i) => unique.forEach((b, j) => {
       const sec = data.durations[i] && data.durations[i][j];
-      if (i !== j && Number.isFinite(sec)) travelCache.set(travelKey(a.lat, a.lng, b.lat, b.lng), Math.round(sec / 60));
+      if (i !== j && Number.isFinite(sec)) rememberTravel(travelKey(a.lat, a.lng, b.lat, b.lng), Math.round(sec / 60));
     }));
   } catch (err) {
     console.error("OSRM Table Error:", err);
@@ -1417,7 +1452,7 @@ async function getCachedRoute(lat1, lng1, lat2, lng2, withSteps = false) {
   const result = await getOSRMRoute(lat1, lng1, lat2, lng2, withSteps);
   if (!result.estimated) {
     routeCache.set(key, result);
-    travelCache.set(key, result.durationMin);
+    rememberTravel(key, result.durationMin);
   }
   return result;
 }
@@ -2434,8 +2469,8 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
 
 let pendingPlanMessage = null; // einmalige Rückmeldung über dem Plan (z. B. nach "Keine Tickets")
 
+// Ausnahme vom Einfrieren: Ticketstatus inkl. "Keine Tickets" (mit automatischer Lückenfüllung) bleibt erlaubt.
 async function markNoTickets(matchId) {
-  if (frozenGuard()) return;
   const trip = getActiveTrip();
   const match = trip && trip.matches.find(m => m.id === matchId);
   if (!match) return;
@@ -2485,6 +2520,7 @@ async function markNoTickets(matchId) {
     trip.plans = plans;
     currentPlanIndex = Math.max(0, plans.findIndex(p => p.signature === activeSignature));
     trip.selectedPlanSignature = plans[currentPlanIndex].signature;
+    if (trip.confirmed) trip.confirmed.planSignature = trip.selectedPlanSignature; // bestätigter Plan wurde angepasst
     saveLocalStorage();
 
     const activeResult = results.get(active);

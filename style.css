@@ -711,7 +711,6 @@ fieldset { border: none; min-width: 0; }
 .trip-frozen #matchFormFields { opacity: 0.45; }
 .trip-frozen .match-menu, .trip-frozen .tl-night .input-row { display: none; }
 .trip-frozen #calculateRouteButton, .trip-frozen #optimizationMode, .trip-frozen #startAddress, .trip-frozen #startAddress + .btn { opacity: 0.5; cursor: not-allowed; }
-.trip-frozen .tt-no:not(.active) { opacity: 0.4; }
 .frozen-title { display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem; }
 
 /* ---------- One-Pager-Übersicht ---------- */
