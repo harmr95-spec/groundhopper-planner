@@ -739,36 +739,6 @@ fieldset { border: none; min-width: 0; }
 .share-link { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; word-break: break-all; resize: vertical; }
 .setting-check { flex-direction: row; font-weight: 500; color: var(--text); padding: 0.4rem 0; }
 
-/* ---------- Spielplan-Import ---------- */
-.card-title-action { margin-left: auto; font-size: 0.78rem; white-space: nowrap; }
-.card-title { flex-wrap: nowrap; }
-.import-modal { width: 760px; }
-.import-modal .field-pair { margin: 0.6rem 0 0.2rem; }
-.country-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.6rem 0 0.8rem; }
-.chip-toggle { cursor: pointer; }
-.chip-toggle input { display: none; }
-.chip-toggle span { display: inline-block; padding: 0.25rem 0.65rem; border-radius: 999px; border: 1px solid var(--border-strong); font-size: 0.8rem; background: var(--surface); }
-.chip-toggle input:checked + span { background: var(--blue); border-color: var(--blue); color: #fff; }
-.imp-results { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.6rem; }
-.imp-day { font-size: 0.95rem; margin-top: 0.6rem; padding-bottom: 0.3rem; border-bottom: 2px solid var(--border); }
-.imp-league { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-.imp-league-head { display: flex; align-items: center; gap: 0.45rem; padding: 0.45rem 0.7rem; background: var(--surface-2); font-size: 0.86rem; cursor: pointer; }
-.imp-fixture { display: grid; grid-template-columns: auto 3.2rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0.4rem 0.7rem; border-top: 1px solid var(--border); font-size: 0.86rem; cursor: pointer; }
-.imp-fixture:hover { background: var(--surface-2); }
-.imp-fixture.done { opacity: 0.55; cursor: default; }
-.imp-time { font-weight: 700; font-variant-numeric: tabular-nums; }
-.imp-teams { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
-.imp-teams .crest { width: 18px; height: 18px; }
-.imp-venue { font-size: 0.75rem; text-align: right; }
-.imp-count { margin-right: auto; font-size: 0.82rem; }
-.alert-actions { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
-.link-inline { background: none; border: none; padding: 0; color: var(--blue); cursor: pointer; font: inherit; display: inline-flex; align-items: center; gap: 0.25rem; }
-.link-inline:hover { text-decoration: underline; }
-@media (max-width: 600px) {
-  .imp-fixture { grid-template-columns: auto 3rem minmax(0, 1fr); }
-  .imp-venue { grid-column: 3; text-align: left; }
-}
-
 /* ---------- Kosten ---------- */
 .stat-violet { background: var(--violet-soft); } .stat-violet .icon { color: var(--violet); }
 .has-cost { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0; }

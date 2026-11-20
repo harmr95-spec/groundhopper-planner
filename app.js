@@ -176,7 +176,13 @@ function loadLocalStorage() {
     const legacy = parsed.settings;
     delete parsed.settings;
     state = { ...state, ...parsed };
-    state.trips.forEach(trip => { trip.settings = completeSettings(trip.settings || legacy); });
+    state.trips.forEach(trip => {
+      trip.settings = completeSettings(trip.settings || legacy);
+      // Reste des entfernten API-Football-Imports aufräumen
+      delete trip.kickoffAlerts; delete trip.kickoffCheckedAt;
+      trip.matches.forEach(m => { delete m.apiFixtureId; });
+    });
+    try { localStorage.removeItem("groundhopping_apifootball"); } catch (e) { /* egal */ }
     if (legacy) saveLocalStorage(); // Umstellung sofort im neuen Format speichern
     // Gespeicherte Pläne referenzieren Spiele nur per ID: wieder mit den Spielobjekten des Trips verknüpfen.
     state.trips.forEach(trip => {
@@ -839,7 +845,6 @@ async function addMatch(e) {
     mustAttend: document.getElementById("mustAttend").checked,
     // Ticketstatus beim Bearbeiten erhalten
     ticketStatus: (editingMatchId && trip.matches.find(m => m.id === editingMatchId)?.ticketStatus) || null,
-    apiFixtureId: (editingMatchId && trip.matches.find(m => m.id === editingMatchId)?.apiFixtureId) || null,
     customArrivalBuffer: document.getElementById("customArrivalBuffer").value ? parseInt(document.getElementById("customArrivalBuffer").value) : null,
     customDepartureBuffer: document.getElementById("customDepartureBuffer").value ? parseInt(document.getElementById("customDepartureBuffer").value) : null
   };
@@ -1101,7 +1106,6 @@ function sanitizeImportedMatch(raw, usedIds, index) {
     stadium: toText(raw.stadium, 200), resolvedAddress: toText(raw.resolvedAddress, 300),
     lat, lng, mustAttend: !!raw.mustAttend,
     ticketStatus: TICKET_STATUSES.includes(raw.ticketStatus) ? raw.ticketStatus : null,
-    apiFixtureId: Number.isInteger(raw.apiFixtureId) && raw.apiFixtureId > 0 ? raw.apiFixtureId : null,
     customArrivalBuffer: buffer(raw.customArrivalBuffer), customDepartureBuffer: buffer(raw.customDepartureBuffer)
   };
 }
@@ -2851,7 +2855,6 @@ function renderPlanSwitcher(plan) {
     pendingPlanMessage = null;
   }
   const header = stale + message
-    + (typeof kickoffAlertsHtml === "function" ? kickoffAlertsHtml(trip) : "")
     + (typeof confirmationHtml === "function" ? confirmationHtml(trip) : "");
   const notes = plan.repairNotes && plan.repairNotes.length
     ? `<details class="repair-notes"><summary>${icon("ticket-x")} Angepasst wegen fehlender Tickets (${plan.repairNotes.length})</summary><ul>${plan.repairNotes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
@@ -3192,7 +3195,6 @@ function toggleSettingsModal() {
   set("weightStadium", weights.stadium);
   updateWeightShares();
   if (typeof loadAiSettingsIntoForm === "function") loadAiSettingsIntoForm();
-  if (typeof loadFootballKeyIntoForm === "function") loadFootballKeyIntoForm();
   if (typeof loadCostSettingsIntoForm === "function") loadCostSettingsIntoForm();
   modal.style.display = "flex";
   modal.querySelector(".modal-body").scrollTop = 0;
@@ -3216,7 +3218,6 @@ document.addEventListener("keydown", e => {
 
 function saveSettings() {
   if (typeof saveAiSettingsFromForm === "function") saveAiSettingsFromForm(); // gerätelokal, nicht im Trip
-  if (typeof saveFootballKeyFromForm === "function") saveFootballKeyFromForm();
   if (typeof saveCostSettingsFromForm === "function") saveCostSettingsFromForm();
   const settings = cfg(); // Einstellungen des aktiven Trips
   const num = (id, fallback) => { const v = parseInt(document.getElementById(id).value, 10); return Number.isFinite(v) && v >= 0 ? v : fallback; };
