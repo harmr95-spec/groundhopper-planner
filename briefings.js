@@ -68,16 +68,33 @@
     const model = document.getElementById("geminiModel").value.trim() || DEFAULT_MODEL;
     if (!apiKey) { setKeyStatus("Bitte zuerst einen Schlüssel eintragen.", "error"); return; }
     setKeyStatus("Teste Verbindung …", "busy");
+    const started = Date.now();
     try {
       await callGemini({ apiKey, model }, "Antworte nur mit dem Wort OK.", null, { json: false, retries: 0 });
-      setKeyStatus(`Verbindung klappt (Modell: ${model}).`, "ok");
+      setKeyStatus(`Verbindung klappt (Modell: ${model}, Antwort nach ${((Date.now() - started) / 1000).toFixed(1).replace(".", ",")} s).`, "ok");
     } catch (err) {
-      setKeyStatus(err.message, "error");
+      setKeyStatus(errorText(err), "error");
     }
   };
 
   // ---------- Gemini-Aufruf ----------
-  class GeminiError extends Error {}
+  class GeminiError extends Error {
+    constructor(message, diag = null) { super(message); this.diag = diag; }
+  }
+
+  // Diagnose eines Aufrufs – wird live angezeigt und bei Fehlern an die Meldung gehängt
+  function newDiag(model) {
+    return { model, started: Date.now(), headersAfter: null, status: null, bytes: 0, events: 0, thoughtChars: 0, textChars: 0, finishReason: null, sample: "" };
+  }
+  function diagText(d) {
+    if (!d) return "";
+    const secs = s => `${Math.round(s / 1000)} s`;
+    const parts = [`Modell ${d.model}`, `Dauer ${secs(Date.now() - d.started)}`];
+    parts.push(d.headersAfter === null ? "keine Antwort vom Server" : `HTTP ${d.status} nach ${secs(d.headersAfter)}`);
+    parts.push(`${d.events} Datenpakete`, `${d.thoughtChars} Zeichen Gedanken`, `${d.textChars} Zeichen Text`);
+    if (d.finishReason) parts.push(`Ende: ${d.finishReason}`);
+    return parts.join(" · ");
+  }
 
   function connectionError(err, reason, started) {
     console.error("Gemini-Anfrage fehlgeschlagen:", err);
@@ -89,12 +106,22 @@
   }
 
   // Ruft Gemini im Streaming-Modus auf (Server-Sent Events) und liefert den kompletten Antworttext.
-  // onProgress(zeichen) wird bei jedem empfangenen Stück aufgerufen.
+  // onProgress(diag) wird bei jedem empfangenen Stück aufgerufen.
   async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null } = {}) {
+    try {
+      return await callGeminiInner(ai, prompt, systemText, { json, retries, onProgress });
+    } catch (err) {
+      if (err instanceof GeminiError && err.diag) console.warn("Gemini-Diagnose:", diagText(err.diag), err.diag.sample);
+      throw err;
+    }
+  }
+
+  async function callGeminiInner(ai, prompt, systemText, { json, retries, onProgress }) {
     const buildBody = () => {
       const generationConfig = { temperature: 0.4, ...(json ? { responseMimeType: "application/json" } : {}) };
       // Kurz "nachdenken" lassen: deutlich schnellere Antworten bei Fakten-Texten
-      if (!thinkingUnsupported) generationConfig.thinkingConfig = { thinkingLevel: "low" };
+      // Gedanken mitschicken lassen: so sieht man den Fortschritt und die Verbindung bleibt aktiv
+      if (!thinkingUnsupported) generationConfig.thinkingConfig = { thinkingLevel: "low", includeThoughts: true };
       const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig };
       if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
       return JSON.stringify(body);
@@ -103,6 +130,8 @@
     for (let attempt = 0; ; attempt++) {
       const ctrl = new AbortController();
       const started = Date.now();
+      const diag = newDiag(ai.model);
+      if (onProgress) onProgress(diag);
       let reason = null, idleTimer = null;
       const armIdle = () => {
         clearTimeout(idleTimer);
@@ -121,8 +150,11 @@
             signal: ctrl.signal
           });
         } catch (err) {
-          throw connectionError(err, reason, started);
+          const e = connectionError(err, reason, started); e.diag = diag; throw e;
         }
+        diag.headersAfter = Date.now() - started;
+        diag.status = res.status;
+        if (onProgress) onProgress(diag);
 
         if (!res.ok) {
           let data = null;
@@ -143,7 +175,7 @@
           if (res.status === 403) throw new GeminiError("Zugriff verweigert – ist der Schlüssel richtig und die Gemini API aktiviert?");
           if (res.status === 404) throw new GeminiError(`Das Modell „${ai.model}“ wurde nicht gefunden. Bitte in den Einstellungen ein anderes Modell eintragen.`);
           if (res.status >= 500 && attempt < retries) { await sleep(3000); continue; }
-          throw new GeminiError(`Gemini-Fehler: ${msg}`);
+          throw new GeminiError(`Gemini-Fehler: ${msg}`, diag);
         }
 
         // Stream lesen: Zeilen "data: {...}"
@@ -155,36 +187,44 @@
           if (!line.startsWith("data:")) return;
           let ev;
           try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
-          if (ev.error) throw new GeminiError(`Gemini-Fehler: ${ev.error.message || "unbekannt"}`);
+          diag.events++;
+          if (diag.sample.length < 600) diag.sample += line.slice(0, 600 - diag.sample.length);
+          if (ev.error) throw new GeminiError(`Gemini-Fehler: ${ev.error.message || "unbekannt"}`, diag);
           if (ev.promptFeedback && ev.promptFeedback.blockReason) blockReason = ev.promptFeedback.blockReason;
           const cand = ev.candidates && ev.candidates[0];
           if (!cand) return;
           const parts = (cand.content && cand.content.parts) || [];
-          parts.forEach(p => { if (!p.thought && p.text) text += p.text; });
-          if (cand.finishReason) finishReason = cand.finishReason;
+          parts.forEach(p => {
+            if (!p.text) return;
+            if (p.thought) diag.thoughtChars += p.text.length;
+            else text += p.text;
+          });
+          diag.textChars = text.length;
+          if (cand.finishReason) finishReason = diag.finishReason = cand.finishReason;
         };
         for (;;) {
           let chunk;
-          try { chunk = await reader.read(); } catch (err) { throw connectionError(err, reason, started); }
+          try { chunk = await reader.read(); } catch (err) { const e = connectionError(err, reason, started); e.diag = diag; throw e; }
           if (chunk.done) break;
           armIdle();
+          diag.bytes += chunk.value.length;
           buffer += decoder.decode(chunk.value, { stream: true });
           let nl;
           while ((nl = buffer.indexOf("\n")) >= 0) {
             handleLine(buffer.slice(0, nl));
             buffer = buffer.slice(nl + 1);
           }
-          if (onProgress) onProgress(text.length);
+          if (onProgress) onProgress(diag);
         }
         handleLine(buffer);
 
         if (!text) {
           throw new GeminiError(blockReason
             ? "Gemini hat die Anfrage blockiert (Inhaltsfilter)."
-            : "Gemini hat keine Antwort geliefert. Bitte erneut versuchen.");
+            : "Gemini hat keine Antwort geliefert. Bitte erneut versuchen.", diag);
         }
         if (finishReason === "MAX_TOKENS" && json) {
-          try { JSON.parse(text); } catch (e) { throw new GeminiError("Die Antwort von Gemini wurde abgeschnitten. Bitte erneut versuchen."); }
+          try { JSON.parse(text); } catch (e) { throw new GeminiError("Die Antwort von Gemini wurde abgeschnitten. Bitte erneut versuchen.", diag); }
         }
         return text;
       } finally {
@@ -281,11 +321,11 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   }
 
   async function generateBriefing(trip, match, ai) {
-    busy = { matchId: match.id, chars: 0, started: Date.now() };
+    busy = { matchId: match.id, started: Date.now(), diag: null };
     updateBusyIndicators();
     try {
       const text = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
-        onProgress: chars => { if (busy) { busy.chars = chars; updateBusyIndicators(); } }
+        onProgress: diag => { if (busy) { busy.diag = diag; updateBusyIndicators(); } }
       });
       const content = sanitizeBriefingContent(parseJsonLoose(text));
       if (!trip.briefings) trip.briefings = {};
@@ -299,8 +339,13 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   // Fortschritt live in Buttons/Modal schreiben, ohne alles neu zu zeichnen
   function busyLabel() {
     if (!busy) return "";
-    if (!busy.chars) return `Denkt nach … ${Math.round((Date.now() - busy.started) / 1000)} s`;
-    return `Schreibt … ${busy.chars >= 1000 ? (busy.chars / 1000).toFixed(1).replace(".", ",") + "k" : busy.chars} Zeichen`;
+    const d = busy.diag;
+    const secs = `${Math.round((Date.now() - busy.started) / 1000)} s`;
+    const k = n => (n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "k" : String(n));
+    if (!d || d.headersAfter === null) return `Warte auf Gemini … ${secs}`;
+    if (d.textChars) return `Schreibt … ${k(d.textChars)} Zeichen`;
+    if (d.thoughtChars) return `Denkt nach … ${secs} · ${k(d.thoughtChars)} Zeichen Gedanken`;
+    return `Verbunden, wartet auf Antwort … ${secs}`;
   }
   function updateBusyIndicators() {
     if (!busy) return;
@@ -316,7 +361,9 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     toggleSettingsModal();
     return null;
   }
-  const errorText = err => (err instanceof GeminiError ? err.message : "Beim Erstellen des One-Pagers ist ein Fehler aufgetreten.");
+  const errorText = err => (err instanceof GeminiError
+    ? err.message + (err.diag ? ` [Details: ${diagText(err.diag)}]` : "")
+    : "Beim Erstellen des One-Pagers ist ein Fehler aufgetreten.");
 
   // ---------- Trip bestätigen ----------
   const activePlan = () => (currentPlans && currentPlans[currentPlanIndex]) || null;
