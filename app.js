@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   maxNightDriveTime: "22:00",
   nextDayStartHour: "08:00",
   maxExtraNightDriveMin: 120,
+  returnHome: true, // Rückfahrt nach Hause einplanen
   groundhopperWeights: { highlight: 40, stage: 30, competition: 20, stadium: 10 }
 };
 
@@ -1031,6 +1032,7 @@ function sanitizeSettings(raw) {
     const v = toNum(raw[key]);
     if (v !== null && v >= 0 && v <= 600) out[key] = Math.round(v);
   });
+  if (typeof raw.returnHome === "boolean") out.returnHome = raw.returnHome;
   ["maxNightDriveTime", "nextDayStartHour"].forEach(key => {
     if (TIME_RE.test(String(raw[key]))) out[key] = raw[key];
   });
@@ -1133,7 +1135,7 @@ function normalizeImportedTrip(rawTrip, fallbackPlans, fallbackSettings) {
     const [oldId, date] = String(oldKey).split("@");
     if (date !== undefined && !isValidDate(date)) return;
     const lat = o && toNum(o.lat), lng = o && toNum(o.lng);
-    if (oldKey === `${ARRIVAL_STOP_PREFIX}${date}` && o && lat !== null && lng !== null) {
+    if ((oldKey === `${ARRIVAL_STOP_PREFIX}${date}` || oldKey === `${RETURN_STOP_PREFIX}${date}`) && o && lat !== null && lng !== null) {
       overnightOverrides[oldKey] = { address: toText(o.address), lat, lng };
       return;
     }
@@ -1532,6 +1534,63 @@ async function planDrivingDays(originLoc, lastMatch, nextMatch, trip) {
   return days;
 }
 
+// ---------- Heimreise ----------
+// Nach dem letzten Spiel: direkt heim, wenn das bis zur spätesten Fahrzeit klappt; sonst Übernachtung
+// (Stadion bzw. eigene Adresse) und am nächsten Tag/den nächsten Tagen nach Hause.
+async function renderReturnTrip(lastMatch, trip, myRun) {
+  const home = { lat: trip.startAddress.lat, lng: trip.startAddress.lng };
+  const tz = matchTz(lastMatch);
+  const override = trip.overnightOverrides[lastMatch.id];
+  const end = calculateMatchEndTime(lastMatch);
+  const cutoff = timeToDateOnDay(lastMatch.date, cfg().maxNightDriveTime, tz);
+  const direct = await getCachedRoute(lastMatch.lat, lastMatch.lng, home.lat, home.lng);
+  if (myRun !== renderRunId) return null;
+  const homeName = trip.startAddress.address || "Zuhause";
+  const homeLink = (from) => generateGoogleDeeplink(from.lat, from.lng, home.lat, home.lng);
+
+  if (direct.geometry) L.geoJSON(direct.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
+
+  // Variante 1: noch am Abend heim
+  if (!override && end.getTime() + direct.durationMin * 60000 <= cutoff.getTime()) {
+    const arr = new Date(end.getTime() + direct.durationMin * 60000);
+    return {
+      tileBody: driveItemHtml({
+        title: `${icon("house", "tone-green")} Heimfahrt nach ${escapeHtml(homeName)}`,
+        dep: fmtTimeTz(end, tz), durationMin: direct.durationMin, arr: fmtTimeTz(arr, homeTz(trip)),
+        arrLabel: "Zuhause ca.", link: homeLink(lastMatch)
+      }),
+      journeyHtml: "", days: []
+    };
+  }
+
+  // Variante 2: Übernachtung, dann Heimreise (ggf. über mehrere Tage)
+  const night = override
+    ? { lat: override.lat, lng: override.lng, name: override.address }
+    : { lat: lastMatch.lat, lng: lastMatch.lng, name: `Nähe ${lastMatch.stadium}` };
+  const fromNight = await getCachedRoute(night.lat, night.lng, home.lat, home.lng);
+  if (myRun !== renderRunId) return null;
+  const n = Math.min(MAX_RETURN_DAYS, Math.max(1, Math.ceil(fromNight.durationMin / DAILY_DRIVE_MIN)));
+  const dates = Array.from({ length: n }, (_, i) => addDaysIso(lastMatch.date, i + 1));
+  const days = await planMultiDayDrive({
+    from: night, dest: home, dates, keyPrefix: RETURN_STOP_PREFIX, trip, isHome: true,
+    tzFirst: tz, tzRest: homeTz(trip), finalName: homeName,
+    labelFor: (i, len) => `${icon("house")} Heimreise${len > 1 ? ` ${i + 1}/${len}` : ""}`
+  });
+  if (myRun !== renderRunId) return null;
+  const journeyHtml = await renderJourneyTiles(days, myRun);
+  if (journeyHtml === null) return null;
+  L.marker([night.lat, night.lng], { icon: pinIcon("night") }).bindPopup(`<b>Übernachtung</b><br>${escapeHtml(night.name)}`).addTo(routeLayer);
+  const inputId = `overnightInput_${lastMatch.id}`;
+  const tileBody = overnightItemHtml({
+    title: "Übernachtung vor der Heimreise",
+    name: night.name,
+    body: `<p class="muted">Bis zur spätesten Fahrzeit (${cfg().maxNightDriveTime} Uhr) reicht es nicht mehr nach Hause – Heimreise am nächsten Tag${n > 1 ? `, verteilt auf ${n} Tage` : ""}.${override ? "" : " Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen."}</p>`,
+    inputId, key: lastMatch.id, override: !!override,
+    links: [{ href: generateHotelSearchLink(night.lat, night.lng), icon: "hotel", text: "Unterkünfte suchen" }]
+  });
+  return { tileBody, journeyHtml, days };
+}
+
 // ---------- Timeline-Bausteine ----------
 function driveItemHtml({ title, dep, durationMin, arr, arrLabel = "Ankunft", link, extra = "" }) {
   return `
@@ -1583,7 +1642,7 @@ async function renderJourneyTiles(days, myRun) {
     const leg = await getCachedRoute(day.from.lat, day.from.lng, day.to.lat, day.to.lng);
     if (myRun !== renderRunId) return null;
     if (leg.geometry) L.geoJSON(leg.geometry, { style: ROUTE_STYLE }).addTo(routeLayer);
-    L.marker([day.to.lat, day.to.lng], { icon: pinIcon("night") }).bindPopup(`<b>Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
+    if (!day.final) L.marker([day.to.lat, day.to.lng], { icon: pinIcon("night") }).bindPopup(`<b>Übernachtung</b><br>${escapeHtml(day.to.name)}`).addTo(routeLayer);
 
     const driveMin = leg.durationMin;
     const dep = timeToDateOnDay(day.date, cfg().nextDayStartHour, day.tz);
@@ -1601,12 +1660,12 @@ async function renderJourneyTiles(days, myRun) {
         </div>
         <div class="day-tile-body">
           ${driveItemHtml({
-            title: `Fahrt nach ${escapeHtml(day.to.name)}`,
-            dep: fmtTimeTz(dep, day.fromTz || day.tz), durationMin: driveMin, arr: fmtTimeTz(arr, day.tz), arrLabel: "Ankunft ca.",
+            title: day.final ? `${icon("house", "tone-green")} Fahrt nach Hause (${escapeHtml(day.to.name)})` : `Fahrt nach ${escapeHtml(day.to.name)}`,
+            dep: fmtTimeTz(dep, day.fromTz || day.tz), durationMin: driveMin, arr: fmtTimeTz(arr, day.tz), arrLabel: day.final ? "Zuhause ca." : "Ankunft ca.",
             link: generateGoogleDeeplink(day.from.lat, day.from.lng, day.to.lat, day.to.lng),
             extra: longWarning
           })}
-          ${overnightItemHtml({
+          ${day.final ? "" : overnightItemHtml({
             title: "Übernachtung",
             name: day.to.name,
             body: day.override ? "" : `<p class="muted">Automatischer Vorschlag – bitte Unterkünfte vor Ort prüfen. Bei anderer Adresse rechnen die Folgetage ab dort neu.</p>`,
@@ -1934,13 +1993,67 @@ function morningWindowMin(m) {
   return Math.max(0, (requiredArrivalTime(m) - timeToDateOnDay(m.date, cfg().nextDayStartHour, matchTz(m))) / 60000);
 }
 
-// Machbar mit Anreisetag? Am Vortag bis zu DAILY_DRIVE_MIN fahren, Rest am Spieltag morgens.
-// Ist für den Anreisetag eine eigene Übernachtungsadresse gesetzt, zählt die Fahrt ab dort.
+const MAX_ARRIVAL_DAYS = 3; // so viele Anreisetage vor dem ersten Spiel sind möglich
+
+const RETURN_STOP_PREFIX = "__home@";
+const MAX_RETURN_DAYS = 4;
+
+// Verteilt eine Fahrt von `from` nach `dest` auf die Tage `dates` (je max. DAILY_DRIVE_MIN, gleichmäßig).
+// Gesetzte Stopps (Overrides unter keyPrefix+Datum) ersetzen den Vorschlag; danach wird ab dort weitergerechnet.
+// finalName: Ziel-Name, wenn ein Tag am Ziel ankommt. Liefert Tage für renderJourneyTiles.
+async function planMultiDayDrive({ from, dest, dates, keyPrefix, trip, tzFirst, tzRest, labelFor, finalName, isHome = false }) {
+  const days = [];
+  let cur = { ...from };
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i], key = `${keyPrefix}${date}`;
+    const ov = trip.overnightOverrides[key];
+    const daysLeft = dates.length - i;
+    let to, reachesDest = false;
+    if (ov) {
+      to = { lat: ov.lat, lng: ov.lng, name: ov.address };
+    } else {
+      const route = await getCachedRoute(cur.lat, cur.lng, dest.lat, dest.lng, true);
+      const perDay = Math.min(DAILY_DRIVE_MIN, Math.ceil(route.durationMin / daysLeft));
+      if (perDay >= route.durationMin - 1) {
+        to = { lat: dest.lat, lng: dest.lng, name: finalName };
+        reachesDest = true;
+      } else {
+        const fraction = perDay / Math.max(1, route.durationMin);
+        const pt = findPointAtTime(route.steps, perDay * 60) || {
+          lat: cur.lat + (dest.lat - cur.lat) * fraction, lng: cur.lng + (dest.lng - cur.lng) * fraction
+        };
+        const name = (await cachedReverseGeocode(pt.lat, pt.lng)) || `Ungefähr ${pt.lat.toFixed(3)}, ${pt.lng.toFixed(3)}`;
+        to = { lat: pt.lat, lng: pt.lng, name };
+      }
+    }
+    const tz = i === 0 ? tzFirst : tzRest;
+    days.push({ date, key, override: !!ov, from: cur, to, tz, fromTz: tz, label: labelFor(i, dates.length), final: isHome && reachesDest });
+    cur = to;
+    if (reachesDest) break;
+  }
+  return days;
+}
+
+// Letzter selbst gesetzter Anreise-Stopp vor dem Spieltag von m (oder null)
+function latestArrivalStop(trip, m) {
+  for (let k = 1; k <= MAX_ARRIVAL_DAYS; k++) {
+    const date = addDaysIso(m.date, -k);
+    const ov = trip && trip.overnightOverrides[`${ARRIVAL_STOP_PREFIX}${date}`];
+    if (ov) return { ...ov, date };
+  }
+  return null;
+}
+
+// Machbar mit Anreisetag(en)? Pro Anreisetag bis zu DAILY_DRIVE_MIN fahren, Rest am Spieltag morgens.
+// Ist für einen Anreisetag eine eigene Übernachtungsadresse gesetzt, zählt die restliche Fahrt ab dort.
 async function arrivalDayFeasible(home, m) {
   const trip = getActiveTrip();
-  const stop = trip && trip.overnightOverrides[arrivalDayKey(m.date)];
-  if (stop) return (await getCachedTravelMin(stop.lat, stop.lng, m.lat, m.lng)) <= morningWindowMin(m);
-  return (await getCachedTravelMin(home.lat, home.lng, m.lat, m.lng)) <= DAILY_DRIVE_MIN + morningWindowMin(m);
+  const stop = latestArrivalStop(trip, m);
+  if (stop) {
+    const daysLeft = daysBetween(stop.date, m.date) - 1;
+    return (await getCachedTravelMin(stop.lat, stop.lng, m.lat, m.lng)) <= daysLeft * DAILY_DRIVE_MIN + morningWindowMin(m);
+  }
+  return (await getCachedTravelMin(home.lat, home.lng, m.lat, m.lng)) <= MAX_ARRIVAL_DAYS * DAILY_DRIVE_MIN + morningWindowMin(m);
 }
 
 // Am selben Tag (ab Morgen-Startzeit) von zu Hause erreichbar?
@@ -2119,6 +2232,14 @@ function planSignature(dayChains) {
   return dayChains.map(dc => dayChainSignature(dc.chain)).join('|');
 }
 
+// Rückfahrt vom letzten Spiel (bzw. dessen Übernachtung) nach Hause in die Fahrzeit einrechnen
+async function withReturnTravel(planState, trip) {
+  const loc = planState.currentLoc;
+  if (cfg().returnHome === false || !loc || !loc.fromMatch) return { ...planState, returnTravelMin: 0 };
+  const min = await getCachedTravelMin(loc.lat, loc.lng, trip.startAddress.lat, trip.startAddress.lng);
+  return { ...planState, totalTravelMin: planState.totalTravelMin + min, returnTravelMin: min };
+}
+
 function finalizePlanState(beamState, trip) {
   const selected = beamState.dayChains.flatMap(dc => dc.chain);
   const dropped = beamState.dayChains.flatMap(dc => dc.dropped);
@@ -2130,6 +2251,7 @@ function finalizePlanState(beamState, trip) {
     selected,
     dropped,
     totalTravelMin: beamState.totalTravelMin,
+    returnTravelMin: beamState.returnTravelMin || 0,
     tightNights: beamState.tightNights,
     infeasibleNights: beamState.infeasibleNights,
     matchCount: selected.length,
@@ -2355,7 +2477,9 @@ async function buildOptimizedScheduleAlternatives(trip) {
     beam = nextBeam.slice(0, BEAM_WIDTH);
   }
 
-  const finalized = beam.map(b => finalizePlanState(b, trip));
+  const withReturn = [];
+  for (const b of beam) withReturn.push(await withReturnTravel(b, trip));
+  const finalized = withReturn.map(b => finalizePlanState(b, trip));
   const finalReferenceCount = Math.max(1, ...finalized.map(plan => plan.matchCount));
   finalized.sort((a, b) => comparePlans(a, b, finalReferenceCount));
   const diverse = filterUsefulPlans(finalized).slice(0, MAX_PLANS);
@@ -2460,7 +2584,7 @@ async function repairPlanWithoutMatch(plan, trip, removed, transferOverrides) {
     const dc = dayChains[i];
     st = await appendDay(st, trip, dc.date, dc.chain, dc.dropped, dayChains[i + 1] && dayChains[i + 1].date);
   }
-  const repaired = finalizePlanState(st, trip);
+  const repaired = finalizePlanState(await withReturnTravel(st, trip), trip);
   repaired.optimizationMode = plan.optimizationMode || currentOptimizationMode;
   repaired.description = plan.description;
   repaired.repairNotes = [...(plan.repairNotes || []), ...(note ? [note] : [])];
@@ -2745,35 +2869,25 @@ async function renderDayTiles(plan, trip) {
   const allDropped = [];
   const drivenDates = new Set(); // Tage, die als Fahrtag gezeigt werden
 
-  // Anreisetag: Ist das erste eingeplante Spiel nicht am selben Tag von zu Hause erreichbar,
-  // wird am Vortag angereist (Übernachtung in Stadionnähe bzw. nach max. 12 h Fahrt).
-  let arrivalDay = null;
+  // Anreisetage: Ist das erste eingeplante Spiel nicht am selben Tag von zu Hause erreichbar, wird vorher
+  // angereist – so viele Tage wie nötig (max. MAX_ARRIVAL_DAYS), möglichst mit Übernachtung in Stadionnähe.
+  let arrivalDays = [];
   const firstDc = plan.dayChains.find(x => x.chain.length > 0);
   if (firstDc && !(await reachableSameDayFromHome(currentLoc, firstDc.chain[0]))) {
     const first = firstDc.chain[0];
-    const date = addDaysIso(first.date, -1);
-    const key = arrivalDayKey(first.date);
-    const ov = trip.overnightOverrides[key];
-    let to;
-    if (ov) {
-      to = { lat: ov.lat, lng: ov.lng, name: ov.address };
-    } else {
-      const route = await getCachedRoute(currentLoc.lat, currentLoc.lng, first.lat, first.lng, true);
-      if (myRun !== renderRunId) return;
-      if (route.durationMin <= DAILY_DRIVE_MIN) {
-        to = { lat: first.lat, lng: first.lng, name: `Nähe ${first.stadium}` };
-      } else {
-        const p = findPointAtTime(route.steps, DAILY_DRIVE_MIN * 60) || {
-          lat: currentLoc.lat + (first.lat - currentLoc.lat) * (DAILY_DRIVE_MIN / route.durationMin),
-          lng: currentLoc.lng + (first.lng - currentLoc.lng) * (DAILY_DRIVE_MIN / route.durationMin)
-        };
-        const name = (await cachedReverseGeocode(p.lat, p.lng)) || `Ungefähr ${p.lat.toFixed(3)}, ${p.lng.toFixed(3)}`;
-        to = { lat: p.lat, lng: p.lng, name };
-      }
-    }
-    arrivalDay = { date, key, override: !!ov, from: { ...currentLoc }, to, tz: homeTz(trip), label: `${icon("luggage")} Anreisetag` };
-    drivenDates.add(date);
+    const total = (await getCachedRoute(currentLoc.lat, currentLoc.lng, first.lat, first.lng)).durationMin;
+    if (myRun !== renderRunId) return;
+    const n = Math.min(MAX_ARRIVAL_DAYS, Math.max(1, Math.ceil(total / DAILY_DRIVE_MIN)));
+    const dates = Array.from({ length: n }, (_, i) => addDaysIso(first.date, -(n - i)));
+    arrivalDays = await planMultiDayDrive({
+      from: currentLoc, dest: first, dates, keyPrefix: ARRIVAL_STOP_PREFIX, trip,
+      tzFirst: homeTz(trip), tzRest: matchTz(first), finalName: `Nähe ${first.stadium}`,
+      labelFor: (i, len) => `${icon("luggage")} Anreisetag${len > 1 ? ` ${i + 1}/${len}` : ""}`
+    });
+    if (myRun !== renderRunId) return;
+    arrivalDays.forEach(day => drivenDates.add(day.date));
   }
+  const arrivalDay = arrivalDays[0] || null;
   let arrivalRendered = false;
 
   for (let d = 0; d < plan.dayChains.length; d++) {
@@ -2781,10 +2895,10 @@ async function renderDayTiles(plan, trip) {
     allDropped.push(...dc.dropped);
 
     if (arrivalDay && !arrivalRendered && dc.date >= arrivalDay.date) {
-      const arrivalHtml = await renderJourneyTiles([arrivalDay], myRun);
+      const arrivalHtml = await renderJourneyTiles(arrivalDays, myRun);
       if (arrivalHtml === null) return;
       html += arrivalHtml;
-      currentLoc = { ...arrivalDay.to };
+      currentLoc = { ...arrivalDays[arrivalDays.length - 1].to };
       currentTz = matchTz(firstDc.chain[0]);
       arrivalRendered = true;
     }
@@ -2942,6 +3056,12 @@ async function renderDayTiles(plan, trip) {
         ? { ...drivingDays[drivingDays.length - 1].to }
         : { lat: overnightLoc.lat, lng: overnightLoc.lng, name: overnightLoc.name };
       currentTz = drivingDays.length ? drivingDays[drivingDays.length - 1].tz : matchTz(lastMatch);
+    } else if (!nextDc && dc.chain.length > 0 && cfg().returnHome !== false) {
+      const ret = await renderReturnTrip(dc.chain[dc.chain.length - 1], trip, myRun);
+      if (ret === null) return;
+      tileBody += ret.tileBody;
+      journeyHtml = ret.journeyHtml;
+      ret.days.forEach(day => drivenDates.add(day.date));
     }
 
     html += `
@@ -3004,6 +3124,7 @@ function toggleSettingsModal() {
   set("settingMaxNightDrive", settings.maxNightDriveTime);
   set("settingNextDayStart", settings.nextDayStartHour);
   set("settingMaxExtraNightDrive", settings.maxExtraNightDriveMin);
+  document.getElementById("settingReturnHome").checked = settings.returnHome !== false;
   const weights = settings.groundhopperWeights || DEFAULT_WEIGHTS;
   set("weightHighlight", weights.highlight);
   set("weightStage", weights.stage);
@@ -3045,6 +3166,7 @@ function saveSettings() {
   settings.maxNightDriveTime = time("settingMaxNightDrive", settings.maxNightDriveTime);
   settings.nextDayStartHour = time("settingNextDayStart", settings.nextDayStartHour);
   settings.maxExtraNightDriveMin = num("settingMaxExtraNightDrive", settings.maxExtraNightDriveMin);
+  settings.returnHome = document.getElementById("settingReturnHome").checked;
   settings.groundhopperWeights = {
     highlight: weight("weightHighlight"), stage: weight("weightStage"),
     competition: weight("weightCompetition"), stadium: weight("weightStadium")

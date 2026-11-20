@@ -737,3 +737,4 @@ fieldset { border: none; min-width: 0; }
 .share-explain { display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.86rem; margin: 0.6rem 0 0.8rem; }
 .share-explain .icon { margin-top: 0.15rem; }
 .share-link { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; word-break: break-all; resize: vertical; }
+.setting-check { flex-direction: row; font-weight: 500; color: var(--text); padding: 0.4rem 0; }

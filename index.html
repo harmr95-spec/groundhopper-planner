@@ -7,7 +7,7 @@
   <title>Groundhopper Planner</title>
   <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./style.css?v=20261120-8" />
+  <link rel="stylesheet" href="./style.css?v=20261120-9" />
   <script src="./icons.js?v=20261114-14"></script>
 </head>
 <body>
@@ -244,6 +244,10 @@
             <span>Früheste Fahrzeit (morgens)</span>
             <input type="time" id="settingNextDayStart" />
           </label>
+          <label class="check-row setting-wide setting-check" for="settingReturnHome">
+            <input type="checkbox" id="settingReturnHome" />
+            <span>Rückfahrt nach Hause einplanen (in Fahrzeit und Ablaufplan)</span>
+          </label>
           <label class="setting-field" for="settingMaxExtraNightDrive">
             <span>Max. Zusatz-Nachtfahrt bei Zeitnot</span>
             <span class="input-unit"><input type="number" id="settingMaxExtraNightDrive" min="0" step="15" /><em>Min.</em></span>
@@ -301,7 +305,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./app.js?v=20261120-8"></script>
+  <script src="./app.js?v=20261120-9"></script>
   <script src="./briefings.js?v=20261120-6"></script>
   <script src="./share.js?v=20261120-9"></script>
   <script src="./features.js?v=20261120-6"></script>
