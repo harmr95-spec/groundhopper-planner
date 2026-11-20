@@ -31,6 +31,7 @@
     night: [["Zimmer", "shared"], ["Frühstück", "person"], ["Kurtaxe", "person"], ["Parken", "shared"]],
     drive: [["Maut", "shared"], ["Vignette", "shared"], ["Parken", "shared"]]
   };
+  const MIN_FUEL = 0.5; // Spritkosten unter 50 Cent (z. B. 300 m zur Unterkunft) nicht als Kosten anzeigen
   const KIND_TITLE = { match: "Kosten Spiel", night: "Kosten Übernachtung", drive: "Kosten Fahrt" };
 
   // ---------- Einstellungen ----------
@@ -195,16 +196,15 @@
     linesOf(key).forEach(l => { if (l.mode === "person") person += l.amount; else shared += l.amount; });
     const total = fuel.cost + shared + person * c.persons;
     const perPerson = (fuel.cost + shared) / c.persons + person;
-    return { fuel, shared, person, total, perPerson, hasAny: fuel.cost > 0 || linesOf(key).length > 0 };
+    return { fuel, shared, person, total, perPerson, hasAny: fuel.cost >= MIN_FUEL || linesOf(key).length > 0 };
   }
 
+  // Unter dem Betrag nur die Kategorien (ohne Werte), z. B. "Sprit · Maut · +1"
   function subText(key, t) {
-    const lines = linesOf(key);
-    const parts = [];
-    if (t.fuel.cost > 0) parts.push(`Sprit ${eur(t.fuel.cost)}`);
-    lines.slice(0, t.fuel.cost > 0 ? 1 : 2).forEach(l => parts.push(l.label || "Posten"));
-    if (lines.length > (t.fuel.cost > 0 ? 1 : 2)) parts.push(`+${lines.length - (t.fuel.cost > 0 ? 1 : 2)}`);
-    return parts.join(" · ");
+    const names = [];
+    if (t.fuel.cost >= MIN_FUEL) names.push("Sprit");
+    linesOf(key).forEach(l => { const n = (l.label || "Posten").trim(); if (!names.includes(n)) names.push(n); });
+    return names.length > 3 ? `${names.slice(0, 2).join(" · ")} · +${names.length - 2}` : names.join(" · ");
   }
 
   // Alle Anzeigen (Buttons, Tagessummen, Plan) aktualisieren
@@ -282,7 +282,7 @@
         <button type="button" class="${line.mode !== "person" ? "on" : ""}" onclick="costSetMode('${k}','${line.id}','shared')" title="Betrag fällt einmal an und wird geteilt">${icon("users")} geteilt</button>
         <button type="button" class="${line.mode === "person" ? "on" : ""}" onclick="costSetMode('${k}','${line.id}','person')" title="Betrag fällt für jede Person an">${icon("ticket")} pro Person</button>
       </span>`;
-    const fuelRow = item.legs.length ? `
+    const fuelRow = item.legs.length && t.fuel.cost >= MIN_FUEL ? `
       <div class="ce-row ce-auto">
         <span class="ce-label">${icon("sparkles", "tone-sky")}<span>Sprit (automatisch)<br><small>${Object.entries(t.fuel.per).sort((a, b) => b[1] - a[1]).map(([cc, km]) =>
           `<span class="flag">${cc.toUpperCase()}</span> ${Math.round(km)} km × ${priceFor(cc, c).toLocaleString("de-DE", { minimumFractionDigits: 2 })} ${ft.priceUnit.replace("€/", "€/")}`).join(" · ") || "–"}</small></span></span>
