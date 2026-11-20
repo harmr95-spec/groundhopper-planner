@@ -22,6 +22,7 @@
   let lastWorkingModel = null;             // zuletzt erfolgreiches Modell (nur für diese Sitzung)
   const TOTAL_TIMEOUT_MS = 360000;         // absolute Obergrenze pro One-Pager
   let thinkingUnsupported = false;         // ältere Modelle kennen thinkingLevel nicht
+  const searchUnsupported = new Set();     // Modelle, bei denen die Google-Suche (Grounding) nicht geht
 
   // Laufende Erstellung: { matchId, chars, started } bzw. Sammel-Lauf { done, total }
   let busy = null;
@@ -115,7 +116,7 @@
   // onProgress(diag) wird bei jedem empfangenen Stück aufgerufen.
   // Bei Überlastung: dasselbe Modell nach kurzer Pause noch einmal, dann die Ausweich-Modelle.
   // onModel(modell, istAusweich) meldet, welches Modell gerade versucht wird. Liefert { text, model }.
-  async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null, onModel = null, fallback = true } = {}) {
+  async function callGemini(ai, prompt, systemText, { json = true, retries = 1, onProgress = null, onModel = null, fallback = true, search = false } = {}) {
     const order = fallback
       ? [...new Set([lastWorkingModel, ai.model, ...FALLBACK_MODELS].filter(Boolean))]
       : [ai.model];
@@ -125,9 +126,9 @@
       for (let round = 0; round < 2; round++) {
         if (onModel) onModel(model, model !== ai.model);
         try {
-          const text = await callGeminiInner({ ...ai, model }, prompt, systemText, { json, retries, onProgress });
+          const result = await callGeminiInner({ ...ai, model }, prompt, systemText, { json, retries, onProgress, search });
           if (fallback) lastWorkingModel = model;
-          return { text, model };
+          return { ...result, model };
         } catch (err) {
           if (err instanceof GeminiError && err.diag) console.warn("Gemini-Diagnose:", diagText(err.diag), err.diag.sample);
           lastErr = err;
@@ -147,14 +148,18 @@
     throw new GeminiError(`Alle Gemini-Modelle sind gerade ausgelastet (versucht: ${tried.join(", ")}). Das liegt bei Google und ist meist nach ein paar Minuten vorbei – bitte später erneut versuchen.`, lastErr && lastErr.diag);
   }
 
-  async function callGeminiInner(ai, prompt, systemText, { json, retries, onProgress }) {
+  async function callGeminiInner(ai, prompt, systemText, { json, retries, onProgress, search }) {
+    // Google-Suche (Grounding) für aktuelle Infos; JSON-Modus ist zusammen mit Tools nicht überall erlaubt,
+    // daher wird das JSON-Format dann nur per Prompt verlangt und tolerant geparst.
+    const useSearch = () => search && !searchUnsupported.has(ai.model);
     const buildBody = () => {
-      const generationConfig = { temperature: 0.4, ...(json ? { responseMimeType: "application/json" } : {}) };
+      const generationConfig = { temperature: 0.4, ...(json && !useSearch() ? { responseMimeType: "application/json" } : {}) };
       // Kurz "nachdenken" lassen: deutlich schnellere Antworten bei Fakten-Texten
       // Gedanken mitschicken lassen: so sieht man den Fortschritt und die Verbindung bleibt aktiv
       if (!thinkingUnsupported) generationConfig.thinkingConfig = { thinkingLevel: "low", includeThoughts: true };
       const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig };
       if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
+      if (useSearch()) body.tools = [{ google_search: {} }];
       return JSON.stringify(body);
     };
 
@@ -197,6 +202,12 @@
             attempt--;
             continue;
           }
+          // Google-Suche nicht verfügbar (Modell/Kontingent) -> ohne Suche erneut versuchen
+          if (useSearch() && (res.status === 400 || res.status === 403 || res.status === 429) && /search|grounding|tool/i.test(msg)) {
+            searchUnsupported.add(ai.model);
+            attempt--;
+            continue;
+          }
           if (res.status === 429) {
             const wait = retryDelayMs(data);
             if (attempt < retries && wait <= MAX_RETRY_WAIT_MS) { await sleep(wait); continue; }
@@ -213,6 +224,8 @@
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "", text = "", finishReason = null, blockReason = null;
+        const searchRequested = useSearch();
+        const grounding = { used: false, sources: [], entryPoint: "", queries: [] };
         const handleLine = line => {
           line = line.trim();
           if (!line.startsWith("data:")) return;
@@ -236,6 +249,15 @@
           });
           diag.textChars = text.length;
           if (cand.finishReason) finishReason = diag.finishReason = cand.finishReason;
+          const gm = cand.groundingMetadata;
+          if (gm) {
+            (gm.groundingChunks || []).forEach(c => {
+              const w = c && c.web;
+              if (w && w.uri && !grounding.sources.some(x => x.uri === w.uri)) grounding.sources.push({ uri: w.uri, title: w.title || w.uri });
+            });
+            if (gm.searchEntryPoint && gm.searchEntryPoint.renderedContent) grounding.entryPoint = gm.searchEntryPoint.renderedContent;
+            (gm.webSearchQueries || []).forEach(q => { if (!grounding.queries.includes(q)) grounding.queries.push(q); });
+          }
         };
         for (;;) {
           let chunk;
@@ -259,9 +281,11 @@
             : "Gemini hat keine Antwort geliefert. Bitte erneut versuchen.", diag);
         }
         if (finishReason === "MAX_TOKENS" && json) {
-          try { JSON.parse(text); } catch (e) { throw new GeminiError("Die Antwort von Gemini wurde abgeschnitten. Bitte erneut versuchen.", diag); }
+          try { parseJsonLoose(text); } catch (e) { throw new GeminiError("Die Antwort von Gemini wurde abgeschnitten. Bitte erneut versuchen.", diag); }
         }
-        return text;
+        grounding.used = searchRequested && (grounding.sources.length > 0 || grounding.queries.length > 0);
+        grounding.requested = searchRequested;
+        return { text, grounding };
       } finally {
         clearTimeout(idleTimer);
         clearTimeout(totalTimer);
@@ -278,54 +302,98 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---------- Prompt ----------
-  const SYSTEM_TEXT = `Du bist ein erfahrener Groundhopper und Fußballhistoriker und schreibst kompakte, unterhaltsame One-Pager auf Deutsch.
+  const SYSTEM_TEXT = `Du bist ein erfahrener Groundhopper und Fußballjournalist und schreibst prägnante One-Pager auf Deutsch – mit vielen konkreten Fakten und wenig Floskeln.
 Regeln:
-- Schreibe nur, was du mit hoher Sicherheit weißt. Erfinde keine Zahlen, Daten, Ergebnisse, Namen oder Zitate.
-- Wenn du dir bei etwas nicht sicher bist, lass es weg oder formuliere es vorsichtig ("angeblich", "nach Fan-Erzählungen").
-- Ist das Stadion oder ein Verein kaum bekannt (z. B. unterklassig), sag das offen und halte den Abschnitt kurz.
-- Antworte ausschließlich mit gültigem JSON im vorgegebenen Format, ohne Markdown.`;
+- Nutze die Google-Suche für alles Aktuelle (Tabelle, Form, direkte Duelle, News, Fanszene). Übernimm nur, was die Suchergebnisse belegen.
+- Erfinde keine Zahlen, Ergebnisse, Daten, Namen oder Zitate. Fehlt eine Info, lass das Feld leer bzw. die Liste leer.
+- Keine allgemeinen Füllsätze ("packendes Spiel", "tolle Atmosphäre"). Lieber kurz und konkret.
+- Antworte ausschließlich mit einem einzigen gültigen JSON-Objekt im vorgegebenen Format, ohne Markdown und ohne Text davor oder danach.`;
 
   function buildPrompt(m) {
     const competition = typeof matchContextLabel === "function" ? matchContextLabel(m).replace(/<[^>]+>/g, "") : "";
-    return `Erstelle einen One-Pager für dieses Fußballspiel:
+    const today = new Date().toISOString().slice(0, 10);
+    return `Heute ist der ${today}. Erstelle einen One-Pager für dieses Fußballspiel:
 - Heim: ${m.home}
 - Gast: ${m.away}
 - Wettbewerb: ${competition}
-- Datum/Anstoß: ${m.date} ${m.time} Uhr
-- Stadion: ${m.stadium}${m.resolvedAddress ? ` (${m.resolvedAddress})` : ""}${m.stadiumCapacity ? `, ca. ${m.stadiumCapacity} Plätze` : ""}
+- Termin: ${formatDateLong(m.date)}, Anstoß ${m.time} Uhr (Wochentag bitte genau so übernehmen)
+- Stadion: ${m.stadium}${m.resolvedAddress ? ` (${m.resolvedAddress})` : ""}
 - Land: ${(m.countryCode || "").toUpperCase()}
 
-Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Listen max. 5 Einträge):
+Recherchiere per Google-Suche:
+1. Aktueller Tabellenplatz, Punkte, Spiele und die letzten 5 Ligaspiele (Form) beider Teams.
+2. Die letzten bis zu 10 Pflichtspiel-Begegnungen der beiden Teams gegeneinander (neueste zuerst) mit Datum, Wettbewerb, Heim-/Gastteam und Ergebnis.
+3. Aktuelle News beider Clubs aus den letzten 4 Wochen: Trainer, Verletzte/Sperren, Transfers, Vereinspolitik – und besonders die Fanszene (Stimmungsboykott, Streik, Proteste, Choreos, Stadionverbote, Auswärtsverbote, Ticketpreise).
+4. Trivia: überraschende, konkrete Fakten zu Stadion, Vereinen und Begegnung (Rekorde, Kuriositäten, berühmte Spieler, Ursprung von Spitznamen, Anekdoten).
+
+Gib JSON in genau diesem Format zurück:
 {
-  "intro": "2–3 Sätze, worauf man sich bei diesem Spiel freuen kann",
-  "stadium": {
-    "name": "offizieller Name",
-    "facts": [{"label": "z. B. Eröffnet", "value": "..."}],
-    "highlights": ["Besonderheit/Architektur/Atmosphäre"],
-    "stories": [{"title": "kurzer Titel", "text": "wissenswerte Geschichte oder Anekdote"}]
-  },
+  "asOf": "Datum des neuesten verwendeten Infostands (YYYY-MM-DD)",
+  "intro": "1–2 Sätze: Worum geht es sportlich in diesem Spiel konkret?",
   "clubs": [
-    {"name": "Heimverein", "facts": [{"label": "z. B. Gegründet", "value": "..."}], "portrait": "Kurzporträt", "fans": "Fanszene/Spitznamen/Farben"},
-    {"name": "Gastverein", "facts": [], "portrait": "...", "fans": "..."}
+    {
+      "name": "${m.home}",
+      "color": "#RRGGBB Hauptvereinsfarbe",
+      "table": {"league": "Liga", "position": 0, "points": 0, "played": 0},
+      "form": "z. B. SSUNS (S=Sieg, U=Unentschieden, N=Niederlage; ältestes zuerst)",
+      "news": [{"date": "YYYY-MM-DD", "title": "Schlagzeile", "text": "1–2 Sätze"}],
+      "fanScene": "Aktueller Stand der Fanszene in 1–2 Sätzen (leer, wenn nichts bekannt)",
+      "fanAlert": false
+    },
+    { "name": "${m.away}", "color": "#RRGGBB", "table": {}, "form": "", "news": [], "fanScene": "", "fanAlert": false }
   ],
-  "fixture": {
-    "summary": "Einordnung der Begegnung",
-    "rivalry": "Rivalität/Derby-Charakter oder leer",
-    "history": "bisherige Duelle / Historie",
-    "memorable": [{"title": "legendäres Spiel", "text": "..."}]
-  },
-  "tips": [{"title": "Tipp", "text": "Anreise, Stimmung/Kurve, Essen & Trinken, was man nicht verpassen sollte"}],
-  "caveats": ["Hinweise, wo die Angaben unsicher sind"]
-}`;
+  "h2h": [{"date": "YYYY-MM-DD", "competition": "Wettbewerb", "home": "Heimteam", "away": "Gastteam", "homeGoals": 0, "awayGoals": 0}],
+  "stadium": {"name": "offizieller Name", "opened": "Jahr", "capacity": "Plätze", "trivia": ["konkreter Fakt"]},
+  "trivia": ["6–10 konkrete, überraschende Fakten zu Vereinen und Begegnung"],
+  "tips": [{"title": "kurz", "text": "konkreter Tipp für Groundhopper (Anreise, Block/Kurve, Essen/Trinken vor Ort)"}],
+  "caveats": ["was du nicht sicher finden konntest"]
+}
+"fanAlert" nur auf true setzen, wenn die Fanszene aktuell etwas Außergewöhnliches macht (Boykott, Streik, Protest, Spiel unter Ausschluss/Teilausschluss).`;
   }
 
   // ---------- Antwort prüfen & bereinigen (Ausgabe wird nur escaped angezeigt) ----------
-  const txt = (v, max = 800) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const txt = (v, max = 800) => (typeof v === "string" ? v.trim().slice(0, max) : (typeof v === "number" ? String(v) : ""));
   const list = (v, n = 6) => (Array.isArray(v) ? v.slice(0, n) : []);
+  const int = v => { const n = parseInt(v, 10); return Number.isFinite(n) && n >= 0 && n < 1000 ? n : null; };
+  const isoDate = v => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : "");
+  const hexColor = v => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim() : "");
   const facts = v => list(v, 8).map(f => ({ label: txt(f && f.label, 60), value: txt(f && f.value, 160) })).filter(f => f.label && f.value);
   const stories = v => list(v).map(s => ({ title: txt(s && s.title, 120), text: txt(s && s.text) })).filter(s => s.text);
+  const FORM_MAP = { S: "S", W: "S", U: "U", D: "U", N: "N", L: "N" };
 
-  function sanitizeBriefingContent(raw) {
+  function sanitizeV2(raw) {
+    const r = raw && typeof raw === "object" ? raw : {};
+    const st = r.stadium || {};
+    return {
+      v: 2,
+      asOf: isoDate(r.asOf),
+      intro: txt(r.intro, 500),
+      clubs: list(r.clubs, 2).map(c => {
+        const t = (c && c.table) || {};
+        return {
+          name: txt(c && c.name, 80),
+          color: hexColor(c && c.color),
+          table: { league: txt(t.league, 60), position: int(t.position), points: int(t.points), played: int(t.played) },
+          form: String((c && c.form) || "").toUpperCase().split("").map(ch => FORM_MAP[ch]).filter(Boolean).slice(-5).join(""),
+          news: list(c && c.news, 5).map(n => ({ date: isoDate(n && n.date), title: txt(n && n.title, 160), text: txt(n && n.text, 400) })).filter(n => n.title || n.text),
+          fanScene: txt(c && c.fanScene, 400),
+          fanAlert: !!(c && c.fanAlert === true)
+        };
+      }).filter(c => c.name),
+      h2h: list(r.h2h, 10).map(g => ({
+        date: isoDate(g && g.date), competition: txt(g && g.competition, 60),
+        home: txt(g && g.home, 80), away: txt(g && g.away, 80),
+        homeGoals: int(g && g.homeGoals), awayGoals: int(g && g.awayGoals)
+      })).filter(g => g.home && g.away && g.homeGoals !== null && g.awayGoals !== null),
+      stadium: { name: txt(st.name, 120), opened: txt(st.opened, 40), capacity: txt(st.capacity, 40), trivia: list(st.trivia, 6).map(t => txt(t, 300)).filter(Boolean) },
+      trivia: list(r.trivia, 10).map(t => txt(t, 350)).filter(Boolean),
+      tips: stories(r.tips).slice(0, 5),
+      caveats: list(r.caveats, 6).map(c => txt(c, 300)).filter(Boolean)
+    };
+  }
+
+  // Ältere One-Pager (Version 1) weiterhin anzeigen können
+  function sanitizeV1(raw) {
     const r = raw && typeof raw === "object" ? raw : {};
     const st = r.stadium || {}, fx = r.fixture || {};
     return {
@@ -337,6 +405,11 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
       caveats: list(r.caveats).map(c => txt(c, 300)).filter(Boolean)
     };
   }
+  const sanitizeBriefingContent = raw => (raw && raw.v === 2 ? sanitizeV2(raw) : sanitizeV1(raw));
+
+  function sanitizeSources(v) {
+    return list(v, 12).map(x => ({ uri: safeHttpUrl(x && x.uri), title: txt(x && x.title, 160) })).filter(x => x.uri);
+  }
 
   // Für Import: gespeicherte One-Pager prüfen
   window.sanitizeStoredBriefing = function (raw) {
@@ -344,28 +417,41 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
     return {
       createdAt: txt(raw.createdAt, 40),
       model: txt(raw.model, 80),
+      searchUsed: !!raw.searchUsed,
+      sources: sanitizeSources(raw.sources),
+      entryPoint: typeof raw.entryPoint === "string" ? raw.entryPoint.slice(0, 30000) : "",
       content: sanitizeBriefingContent(raw.content)
     };
   };
 
   function parseJsonLoose(text) {
-    try { return JSON.parse(text); } catch (e) { /* weiter */ }
-    const start = text.indexOf("{"), end = text.lastIndexOf("}");
-    if (start !== -1 && end > start) return JSON.parse(text.slice(start, end + 1));
-    throw new GeminiError("Die Antwort von Gemini war kein gültiges JSON.");
+    const cleaned = text.replace(/```(?:json)?/gi, "");
+    try { return JSON.parse(cleaned); } catch (e) { /* weiter */ }
+    const start = cleaned.indexOf("{"), end = cleaned.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { /* unten */ }
+    }
+    throw new GeminiError("Die Antwort von Gemini war kein gültiges JSON. Bitte erneut versuchen.");
   }
 
   async function generateBriefing(trip, match, ai) {
     busy = { matchId: match.id, started: Date.now(), diag: null };
     updateBusyIndicators();
     try {
-      const { text, model } = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
+      const { text, model, grounding } = await callGemini(ai, buildPrompt(match), SYSTEM_TEXT, {
+        search: true,
         onProgress: diag => { if (busy) { busy.diag = diag; updateBusyIndicators(); } },
         onModel: (m, isFallback) => { if (busy) { busy.model = m; busy.fallback = isFallback; busy.diag = null; updateBusyIndicators(); } }
       });
-      const content = sanitizeBriefingContent(parseJsonLoose(text));
+      const parsed = parseJsonLoose(text);
+      const content = sanitizeV2({ ...parsed, v: 2 });
       if (!trip.briefings) trip.briefings = {};
-      trip.briefings[match.id] = { createdAt: new Date().toISOString(), model, content };
+      trip.briefings[match.id] = {
+        createdAt: new Date().toISOString(), model, content,
+        searchUsed: !!(grounding && grounding.used),
+        sources: sanitizeSources(grounding && grounding.sources),
+        entryPoint: (grounding && grounding.entryPoint) || ""
+      };
       saveLocalStorage();
     } finally {
       busy = null;
@@ -583,12 +669,129 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
   const factsHtml = fs => fs.length ? `<dl class="facts">${fs.map(f => `<div><dt>${escapeHtml(f.label)}</dt><dd>${escapeHtml(f.value)}</dd></div>`).join("")}</dl>` : "";
   const storiesHtml = ss => ss.map(s => `<div class="story">${s.title ? `<h5>${escapeHtml(s.title)}</h5>` : ""}<p>${escapeHtml(s.text)}</p></div>`).join("");
   const para = t => t ? `<p>${escapeHtml(t)}</p>` : "";
+  const fmtDay = iso => { const d = new Date(`${iso}T12:00:00`); return isNaN(d) ? "" : d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" }); };
+
+  // Lesbare Textfarbe auf einer Vereinsfarbe
+  function onColor(hex) {
+    const n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 160 ? "#111" : "#fff";
+  }
+  const DEFAULT_CLUB_COLORS = ["#2563eb", "#dc2626"];
+  const norm = v => String(v || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  // Welcher der beiden Vereine ist gemeint? (tolerant: "FC Metz" vs. "Metz")
+  function clubIndex(name, clubs) {
+    const n = norm(name);
+    const words = s => norm(s).split(" ").filter(w => w.length > 2 && !["fc", "sc", "sv", "usl", "afc", "cf", "ac", "rc", "us", "as", "club", "royal"].includes(w));
+    let best = -1, bestScore = 0;
+    clubs.forEach((c, i) => {
+      const cn = norm(c.name);
+      let score = cn === n ? 100 : (cn.includes(n) || n.includes(cn)) ? 50 : 0;
+      score += words(c.name).filter(w => n.includes(w)).length * 10;
+      if (score > bestScore) { bestScore = score; best = i; }
+    });
+    return best;
+  }
+
+  function clubStyle(c, i) {
+    const color = c.color || DEFAULT_CLUB_COLORS[i] || "#64748b";
+    return { color, text: onColor(color) };
+  }
+
+  function tableHtml(clubs) {
+    const rows = clubs.map((c, i) => {
+      const st = clubStyle(c, i), t = c.table;
+      const pos = t.position ? `<span class="tb-pos">${t.position}.</span>` : `<span class="tb-pos muted">–</span>`;
+      const meta = [t.points !== null ? `${t.points} Pkt.` : "", t.played !== null ? `${t.played} Sp.` : "", t.league].filter(Boolean).join(" · ");
+      const form = c.form ? `<span class="form-strip">${c.form.split("").map(f => `<span class="form-${f}" title="${({ S: "Sieg", U: "Unentschieden", N: "Niederlage" })[f]}">${f}</span>`).join("")}</span>` : "";
+      return `<div class="tb-row">${pos}<span class="club-dot" style="background:${st.color}"></span><strong>${escapeHtml(c.name)}</strong><span class="muted tb-meta">${escapeHtml(meta)}</span>${form}</div>`;
+    }).join("");
+    return rows ? `<div class="tb">${rows}</div>` : "";
+  }
+
+  function h2hHtml(games, clubs) {
+    if (!games.length) return `<p class="muted">Keine verlässlichen Daten zu früheren Duellen gefunden.</p>`;
+    const tally = [0, 0, 0]; // Siege Verein 0, Remis, Siege Verein 1
+    const rows = games.map(g => {
+      const draw = g.homeGoals === g.awayGoals;
+      const winnerName = draw ? null : (g.homeGoals > g.awayGoals ? g.home : g.away);
+      const wi = draw ? -1 : clubIndex(winnerName, clubs);
+      if (draw) tally[1]++; else if (wi === 0) tally[0]++; else if (wi === 1) tally[2]++;
+      const st = wi >= 0 ? clubStyle(clubs[wi], wi) : null;
+      const badge = draw
+        ? `<span class="res res-draw" title="Unentschieden">${icon("scale")}</span>`
+        : `<span class="res" style="background:${st ? st.color : "#475569"};color:${st ? st.text : "#fff"}" title="Sieg ${escapeHtml(winnerName)}">${icon("trophy")}</span>`;
+      const team = (name, won) => `<span class="${won ? "h2h-win" : ""}">${escapeHtml(name)}</span>`;
+      return `<div class="h2h-row">${badge}<span class="h2h-date muted">${fmtDay(g.date)}</span>
+        <span class="h2h-match">${team(g.home, !draw && g.homeGoals > g.awayGoals)} <b class="h2h-score">${g.homeGoals}:${g.awayGoals}</b> ${team(g.away, !draw && g.awayGoals > g.homeGoals)}</span>
+        <span class="h2h-comp muted">${escapeHtml(g.competition)}</span></div>`;
+    }).join("");
+    const total = tally[0] + tally[1] + tally[2] || 1;
+    const seg = (n, color, label) => n ? `<span style="flex:${n};background:${color}" title="${label}: ${n}">${n}</span>` : "";
+    const c0 = clubs[0] ? clubStyle(clubs[0], 0) : { color: DEFAULT_CLUB_COLORS[0] };
+    const c1 = clubs[1] ? clubStyle(clubs[1], 1) : { color: DEFAULT_CLUB_COLORS[1] };
+    const bar = `<div class="h2h-bar">${seg(tally[0], c0.color, clubs[0] ? `Siege ${clubs[0].name}` : "Siege")}${seg(tally[1], "#9ca3af", "Unentschieden")}${seg(tally[2], c1.color, clubs[1] ? `Siege ${clubs[1].name}` : "Siege")}</div>
+      <div class="h2h-legend"><span>${clubs[0] ? escapeHtml(clubs[0].name) : ""} <b>${tally[0]}</b></span><span class="muted">Remis <b>${tally[1]}</b></span><span>${clubs[1] ? escapeHtml(clubs[1].name) : ""} <b>${tally[2]}</b></span></div>`;
+    return (total > 0 ? bar : "") + `<div class="h2h-list">${rows}</div>`;
+  }
+
+  function newsHtml(clubs) {
+    const alerts = clubs.filter(c => c.fanAlert && c.fanScene)
+      .map(c => bannerHtml("warning", `<strong>Fanszene ${escapeHtml(c.name)}:</strong> ${escapeHtml(c.fanScene)}`, "users")).join("");
+    const items = [];
+    clubs.forEach((c, i) => {
+      const st = clubStyle(c, i);
+      c.news.forEach(n => items.push({ ...n, club: c.name, st }));
+      if (c.fanScene && !c.fanAlert) items.push({ date: "", title: "Fanszene", text: c.fanScene, club: c.name, st });
+    });
+    items.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const list = items.map(n => `<li class="news-item">
+        <span class="club-tag" style="background:${n.st.color};color:${n.st.text}">${escapeHtml(n.club)}</span>
+        ${n.date ? `<span class="muted news-date">${fmtDay(n.date)}</span>` : ""}
+        <div><strong>${escapeHtml(n.title)}</strong>${n.text ? ` – ${escapeHtml(n.text)}` : ""}</div></li>`).join("");
+    return alerts + (list ? `<ul class="news">${list}</ul>` : `<p class="muted">Keine aktuellen News gefunden.</p>`);
+  }
+
+  function sourcesHtml(b) {
+    const src = (b.sources || []).slice(0, 8);
+    const links = src.map(x => `<a href="${escapeHtml(x.uri)}" target="_blank" rel="noopener noreferrer">${escapeHtml(x.title)}</a>`).join(" · ");
+    // Von Google vorgeschriebene Suchvorschläge – isoliert in einem Sandbox-iframe (ohne Skripte)
+    const entry = b.entryPoint
+      ? `<iframe class="search-entry" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${escapeHtml(b.entryPoint)}" title="Google-Suchvorschläge"></iframe>`
+      : "";
+    return links || entry ? `<div class="bp-sources">${links ? `<div class="src-links">${icon("search")} <span>Quellen: ${links}</span></div>` : ""}${entry}</div>` : "";
+  }
 
   function briefingHtml(match, b) {
+    const c = b.content;
+    if (!c || c.v !== 2) return legacyBriefingHtml(match, b);
+    const section = (tone, iconName, title, body) => body && body.trim()
+      ? `<section class="bp-section"><h4><span class="chip chip-${tone}">${icon(iconName)}</span> ${title}</h4>${body}</section>` : "";
+    const stadiumLine = [c.stadium.name, c.stadium.opened && `eröffnet ${c.stadium.opened}`, c.stadium.capacity && `${c.stadium.capacity} Plätze`].filter(Boolean).map(escapeHtml).join(" · ");
+    const trivia = [...c.stadium.trivia, ...c.trivia];
+    return `<article class="briefing v2">
+      ${b.searchUsed ? "" : bannerHtml("info", "Ohne aktuelle Google-Suche erstellt – Tabelle, Duelle und News können veraltet oder lückenhaft sein.")}
+      ${c.intro ? `<p class="bp-lead">${escapeHtml(c.intro)}</p>` : ""}
+      ${section("blue", "list-checks", `Tabelle &amp; Form${c.asOf ? ` <span class="muted as-of">Stand ${fmtDay(c.asOf)}</span>` : ""}`, tableHtml(c.clubs))}
+      ${section("amber", "history", "Direkter Vergleich – letzte Duelle", h2hHtml(c.h2h, c.clubs))}
+      ${section("red", "info", "Aktuelles aus den Clubs", newsHtml(c.clubs))}
+      ${section("violet", "lightbulb", "Wusstest du schon?",
+        (stadiumLine ? `<p class="stadium-line">${icon("landmark")} ${stadiumLine}</p>` : "") +
+        (trivia.length ? `<ul class="trivia">${trivia.map(t => `<li>${escapeHtml(t)}</li>`).join("")}</ul>` : ""))}
+      ${section("green", "map-pin", "Tipps vor Ort", c.tips.length ? `<ul class="tips">${c.tips.map(t => `<li><strong>${escapeHtml(t.title)}:</strong> ${escapeHtml(t.text)}</li>`).join("")}</ul>` : "")}
+      <footer class="bp-footer">
+        ${sourcesHtml(b)}
+        <div>${icon("sparkles")} KI-generiert mit ${escapeHtml(b.model || "Gemini")}${b.searchUsed ? " und Google-Suche" : ""} am ${new Date(b.createdAt).toLocaleDateString("de-DE")} – Angaben ohne Gewähr.
+        ${c.caveats.length ? `<br><span class="muted">Nicht sicher gefunden: ${c.caveats.map(escapeHtml).join(" · ")}</span>` : ""}</div>
+      </footer>
+    </article>`;
+  }
+
+  function legacyBriefingHtml(match, b) {
     const c = b.content;
     const section = (tone, iconName, title, body) => body.trim()
       ? `<section class="bp-section"><h4><span class="chip chip-${tone}">${icon(iconName)}</span> ${title}</h4>${body}</section>` : "";
     return `<article class="briefing">
+      ${bannerHtml("info", "Älterer One-Pager ohne Tabelle, Duelle und News – mit „Neu erstellen“ bekommst du die neue Version.")}
       ${c.intro ? `<p class="bp-intro">${escapeHtml(c.intro)}</p>` : ""}
       ${section("blue", "landmark", `Stadion${c.stadium.name ? ` · ${escapeHtml(c.stadium.name)}` : ""}`,
         factsHtml(c.stadium.facts) +
@@ -600,10 +803,7 @@ Gib JSON in genau diesem Format zurück (Texte auf Deutsch, je 1–4 Sätze, Lis
         para(c.fixture.summary) + (c.fixture.rivalry ? `<p><strong>Rivalität:</strong> ${escapeHtml(c.fixture.rivalry)}</p>` : "") +
         para(c.fixture.history) + storiesHtml(c.fixture.memorable))}
       ${section("violet", "lightbulb", "Groundhopper-Tipps", storiesHtml(c.tips))}
-      <footer class="bp-footer">
-        ${icon("sparkles")} KI-generiert mit ${escapeHtml(b.model || "Gemini")} am ${new Date(b.createdAt).toLocaleDateString("de-DE")} – Angaben ohne Gewähr, bitte vor Ort nichts blind glauben.
-        ${c.caveats.length ? `<br><span class="muted">Unsicher: ${c.caveats.map(escapeHtml).join(" · ")}</span>` : ""}
-      </footer>
+      <footer class="bp-footer">${icon("sparkles")} KI-generiert mit ${escapeHtml(b.model || "Gemini")} am ${new Date(b.createdAt).toLocaleDateString("de-DE")} – Angaben ohne Gewähr.</footer>
     </article>`;
   }
 

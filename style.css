@@ -602,6 +602,56 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: none; bo
 .bp-club .muted { display: flex; gap: 0.35rem; align-items: flex-start; }
 .bp-footer { font-size: 0.78rem; color: var(--text-muted); border-top: 1px solid var(--border); padding-top: 0.7rem; }
 .briefings-print { display: none; }
+
+/* One-Pager v2: kompakt, viel Inhalt */
+.briefing.v2 { gap: 1.1rem; }
+.bp-lead { font-size: 1rem; font-weight: 500; }
+.as-of { font-size: 0.75rem; font-weight: 500; margin-left: 0.3rem; }
+.tb { display: flex; flex-direction: column; gap: 0.35rem; }
+.tb-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+.tb-row:last-child { border-bottom: none; }
+.tb-pos { font-weight: 800; font-size: 1.05rem; min-width: 2rem; }
+.club-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+.tb-meta { font-size: 0.82rem; }
+.form-strip { display: inline-flex; gap: 3px; margin-left: auto; }
+.form-strip > span { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; font-size: 0.7rem; font-weight: 800; color: #fff; }
+.form-S { background: #16a34a; } .form-U { background: #9ca3af; } .form-N { background: #dc2626; }
+
+.h2h-bar { display: flex; height: 22px; border-radius: 999px; overflow: hidden; margin: 0.2rem 0 0.3rem; }
+.h2h-bar > span { display: grid; place-items: center; color: #fff; font-size: 0.72rem; font-weight: 800; text-shadow: 0 1px 2px rgba(0,0,0,0.35); min-width: 22px; }
+.h2h-legend { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.8rem; margin-bottom: 0.5rem; }
+.h2h-list { display: flex; flex-direction: column; }
+.h2h-row { display: grid; grid-template-columns: 26px 72px minmax(0, 1fr) auto; align-items: center; gap: 0.55rem; padding: 0.3rem 0; border-bottom: 1px dashed var(--border); font-size: 0.86rem; }
+.h2h-row:last-child { border-bottom: none; }
+.res { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; }
+.res .icon { width: 13px; height: 13px; }
+.res-draw { background: #9ca3af; color: #fff; }
+.h2h-date { font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.h2h-score { font-variant-numeric: tabular-nums; padding: 0 0.25rem; }
+.h2h-win { font-weight: 700; }
+.h2h-comp { font-size: 0.75rem; text-align: right; }
+
+.news { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.news-item { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 0.5rem; align-items: baseline; font-size: 0.86rem; }
+.club-tag { font-size: 0.7rem; font-weight: 700; padding: 0.1rem 0.45rem; border-radius: 999px; white-space: nowrap; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; }
+.news-date { font-size: 0.75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.stadium-line { display: flex; align-items: center; gap: 0.4rem; font-weight: 600; margin-bottom: 0.4rem; }
+.trivia, .tips { margin-left: 1.15rem; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.88rem; }
+.trivia li::marker { color: var(--violet); }
+.tips li::marker { color: var(--green); }
+.bp-sources { font-size: 0.75rem; margin-bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.bp-sources a { color: var(--blue); }
+.src-links { display: flex; gap: 0.35rem; align-items: flex-start; line-height: 1.5; }
+.src-links .icon { margin-top: 0.2rem; }
+.search-entry { width: 100%; height: 64px; border: none; border-radius: var(--radius-sm); background: transparent; }
+@media (max-width: 600px) {
+  .h2h-row { grid-template-columns: 26px minmax(0, 1fr); }
+  .h2h-date, .h2h-comp { grid-column: 2; text-align: left; }
+  .news-item { grid-template-columns: auto minmax(0, 1fr); }
+  .news-item > div { grid-column: 1 / -1; }
+}
+@media print { .search-entry { display: none; } .h2h-bar > span, .form-strip > span, .res, .club-tag, .club-dot { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 @media (max-width: 600px) { .bp-clubs { grid-template-columns: 1fr; } }
 
 /* ---------- Druck ---------- */
