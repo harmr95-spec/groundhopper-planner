@@ -596,7 +596,7 @@ Gib JSON in genau diesem Format zurück:
     const date = new Date(trip.confirmed.at).toLocaleDateString("de-DE");
     const batchInfo = batch ? ` · erstelle ${batch.done + 1} von ${batch.total} …` : "";
     return `<div class="confirm-bar confirmed">
-      <div class="confirm-text">${icon("badge-check", "tone-green")} <span><strong>Trip bestätigt</strong> am ${date} · ${icon("book-open")} ${have}/${total} One-Pager${batchInfo}</span></div>
+      <div class="confirm-text">${icon("badge-check", "tone-green")} <span><strong>Trip bestätigt</strong> am ${date} · ${icon("book-open")} ${have}/${total} One-Pager${batchInfo}${typeof kickoffStatusHtml === "function" ? kickoffStatusHtml(trip) : ""}</span></div>
       <div class="confirm-actions">
         ${have < total && !batch ? `<button class="btn btn-soft" onclick="generateMissingBriefings()" ${busy ? "disabled" : ""}>${icon("sparkles")} Alle fehlenden erstellen</button>` : ""}
         <button class="btn btn-ghost" onclick="unconfirmTrip()" title="Bestätigung aufheben (One-Pager bleiben erhalten)" ${busy ? "disabled" : ""}>Aufheben</button>
