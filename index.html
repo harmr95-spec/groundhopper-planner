@@ -33,6 +33,7 @@
           <button type="button" onclick="closeMenus(); openBriefingManager()"><svg class="icon tone-violet" aria-hidden="true"><use href="#i-book-open"/></svg> Match One-Pager</button>
           <button type="button" onclick="closeMenus(); printActiveTrip()"><svg class="icon tone-slate" aria-hidden="true"><use href="#i-printer"/></svg> Drucken / PDF</button>
           <hr>
+          <button type="button" onclick="closeMenus(); shareActiveTrip()"><svg class="icon tone-green" aria-hidden="true"><use href="#i-external-link"/></svg> Trip teilen (Link)</button>
           <button type="button" onclick="closeMenus(); exportActiveTrip()"><svg class="icon tone-blue" aria-hidden="true"><use href="#i-download"/></svg> Exportieren</button>
           <button type="button" onclick="closeMenus(); triggerImportTrip()"><svg class="icon tone-green" aria-hidden="true"><use href="#i-upload"/></svg> Importieren</button>
         </div>
@@ -302,6 +303,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./app.js?v=20261120-8"></script>
   <script src="./briefings.js?v=20261120-6"></script>
+  <script src="./share.js?v=20261120-9"></script>
   <script src="./features.js?v=20261120-6"></script>
 </body>
 </html>
